@@ -8,8 +8,11 @@
 /* function declarations */
 static void *dynamic_file_upstreams_create_main_conf(ngx_conf_t *cf);
 static ngx_int_t ngx_dynamic_file_upstreams_init_process(ngx_cycle_t *cycle);
-static char *set_ngx_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *set_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static void ngx_dynamic_file_upstreams_handler(ngx_event_t *ev);
+static ngx_int_t ngx_dynamic_file_upstreams_check_then_parse(ngx_str_t path, ngx_pool_t *pool, ngx_log_t *log);
+static ngx_int_t ngx_dynamic_file_upstreams_parse(u_char *buf, size_t size, ngx_log_t *log);
+
 
 static ngx_event_t ngx_dynamic_file_upstreams_timer;
 time_t ngx_dynamic_file_upstreams_file_mtime;
@@ -18,7 +21,7 @@ time_t ngx_dynamic_file_upstreams_file_mtime;
 static ngx_command_t ngx_dynamic_file_upstreams_commands[] = {
     { ngx_string("upstreams_file"),
         NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE12,
-        set_ngx_dynamic_file_upstreams_timer,
+        set_dynamic_file_upstreams_timer,
         0,
         0,
         NULL },
@@ -30,6 +33,7 @@ static ngx_command_t ngx_dynamic_file_upstreams_commands[] = {
 typedef struct {
     ngx_str_t upstreams_file;
     ngx_msec_t interval;
+    ngx_pool_t *pool;
 } dynamic_file_upstreams_main_conf_t;
 
 /* module context */
@@ -77,12 +81,15 @@ dynamic_file_upstreams_create_main_conf(ngx_conf_t *cf) {
 }
 
 
-static ngx_int_t ngx_dynamic_file_upstreams_init_process(ngx_cycle_t *cycle)
+static ngx_int_t
+ngx_dynamic_file_upstreams_init_process(ngx_cycle_t *cycle)
 {
+
+    dynamic_file_upstreams_main_conf_t *mcf;
+
     if (ngx_worker != 0) {
         return NGX_OK;  /* only the master process should set the timer */
     }
-    dynamic_file_upstreams_main_conf_t *mcf;
 
     mcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_dynamic_file_upstreams_module);
     if (mcf == NULL) {
@@ -105,12 +112,13 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_process(ngx_cycle_t *cycle)
 }
 
 static char *
-set_ngx_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+set_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     dynamic_file_upstreams_main_conf_t *mcf;
     ngx_int_t i;
 
     mcf = ngx_http_cycle_get_module_main_conf(cf->cycle, ngx_dynamic_file_upstreams_module);
+    ngx_memzero(mcf, sizeof(dynamic_file_upstreams_main_conf_t));
 
     if (cf->args->nelts < 2 || cf->args->nelts > 3) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -139,6 +147,7 @@ set_ngx_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     } else {
         mcf->interval = 60 * 1000;
     }
+    mcf->pool = cf->cycle->pool;
 
     ngx_conf_log_error(NGX_LOG_INFO, cf, 0,
         "dynamic upstreams file, \"%V\", interval %T ms",
@@ -148,28 +157,104 @@ set_ngx_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *c
 }
 
 
-void
+static void
 ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
 {
     dynamic_file_upstreams_main_conf_t *mcf = ev->data;
-    time_t mtime;
 
-    ngx_file_info_t file_info;
-    if (ngx_file_info(mcf->upstreams_file.data, &file_info) == NGX_FILE_ERROR) {
-        ngx_log_error(NGX_LOG_ERR, ev->log, 0, "Dynamic upstreams file not found, \"%V\"", &mcf->upstreams_file);
+    ngx_dynamic_file_upstreams_check_then_parse(mcf->upstreams_file, mcf->pool, ev->log);
+    ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Dynamic upstreams handler called");
+    if (!ngx_exiting) {
         ngx_add_timer(ev, mcf->interval);
-        return;
+    } else {
+        ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Dynamic file upstreams timer stopped due to exiting");
     }
-
-    mtime = ngx_file_mtime(&file_info);
-    if (mtime != ngx_dynamic_file_upstreams_file_mtime) {
-        ngx_dynamic_file_upstreams_file_mtime = mtime;
-        ngx_log_error(NGX_LOG_INFO, ev->log, 0, "Dynamic upstreams file changed, \"%V\", mtime is %T", &mcf->upstreams_file, ngx_dynamic_file_upstreams_file_mtime);
-        // read and parse the file here
-    }
-
-    ngx_log_error(NGX_LOG_INFO, ev->log, 0, "Dynamic upstreams handler called");
-    ngx_add_timer(ev, mcf->interval);
 }
 
-/* stop the timer on reload or exit */
+static ngx_int_t
+ngx_dynamic_file_upstreams_check_then_parse(ngx_str_t path, ngx_pool_t *pool, ngx_log_t *log)
+{
+    ngx_file_t fi;
+    time_t mtime;
+    off_t size;
+    u_char *buf;
+    ssize_t n;
+
+    fi.name = path;
+    fi.log = log;
+    if (ngx_file_info(path.data, &fi.info) == NGX_FILE_ERROR) {
+        ngx_log_error(NGX_LOG_ERR, log, 0, "Dynamic upstreams file not found, \"%V\"", &path);
+        return NGX_ERROR;
+    }
+
+    mtime = ngx_file_mtime(&fi.info);
+    if (mtime == ngx_dynamic_file_upstreams_file_mtime) {
+        ngx_log_error(NGX_LOG_DEBUG, log, 0, "Dynamic upstreams file mtime unchanged, skip processing");
+        return NGX_OK;
+    }
+
+    size = ngx_file_size(&fi.info);
+    if (size == 0) {
+        ngx_log_error(NGX_LOG_ERR, log, 0, "dynamic upstreams file is empty, skip processing");
+        return NGX_ERROR;
+    }
+
+    buf = ngx_pcalloc(pool, size + 1);
+    if (buf == NULL) {
+        ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to allocate memory for dynamic upstreams file buffer");
+        return NGX_ERROR;
+    }
+
+    fi.fd = ngx_open_file(path.data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
+    if (fi.fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "Failed to open dynamic upstreams file \"%V\"", &path);
+        goto ERROR;
+    }
+
+
+    n = ngx_read_file(&fi, buf, size, 0);
+    if (n == NGX_ERROR) {
+        ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "Failed to read dynamic upstreams file \"%V\"", &path);
+        goto ERROR;
+    }
+
+    if (ngx_close_file(fi.fd) == NGX_FILE_ERROR) {
+        ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "Failed to close dynamic upstreams file \"%V\"", &path);
+        goto ERROR;
+    }
+
+    if (n > 0) {
+        buf[n] = '\0';  // Null-terminate the buffer
+        ngx_log_error(NGX_LOG_DEBUG, log, 0, "Dynamic upstreams file content: %s", buf);
+        if (ngx_dynamic_file_upstreams_parse(buf, n, log) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to parse dynamic upstreams file \"%V\"", &path);
+            goto ERROR;
+        }
+    }
+
+    ngx_dynamic_file_upstreams_file_mtime = mtime;
+    ngx_log_error(NGX_LOG_NOTICE, log, 0, "Dynamic upstreams file \"%V\" updated", &path);
+    return NGX_OK;
+
+ERROR:
+    if (buf != NULL) {
+        ngx_pfree(pool, buf);
+    }
+    if (fi.fd != NGX_INVALID_FILE) {
+        ngx_close_file(fi.fd);
+    }
+    return NGX_ERROR;
+}
+
+
+static ngx_int_t
+ngx_dynamic_file_upstreams_parse(u_char *buf, size_t size, ngx_log_t *log) {
+    return NGX_OK;
+}
+
+
+// static ngx_int_t
+// ngx_dynamic_file_upstreams_update_rr_peers() {
+//     // maybe update ngx_http_upstream_main_conf_t?
+//     return NGX_OK;
+// }
