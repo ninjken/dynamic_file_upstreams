@@ -108,6 +108,9 @@ ngx_dynamic_file_upstreams_init_process(ngx_cycle_t *cycle)
     ngx_dynamic_file_upstreams_timer.data = mcf;
     ngx_dynamic_file_upstreams_timer.log = cycle->log;
     ngx_add_timer(&ngx_dynamic_file_upstreams_timer, mcf->interval);
+    ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0, "Dynamic file upstreams timer started, upstreams file %V, interval: %T ms",
+        &mcf->upstreams_file, mcf->interval);
+
     return NGX_OK;
 }
 
@@ -149,7 +152,7 @@ set_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
     mcf->pool = cf->cycle->pool;
 
-    ngx_conf_log_error(NGX_LOG_INFO, cf, 0,
+    ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0,
         "dynamic upstreams file, \"%V\", interval %T ms",
         &mcf->upstreams_file, mcf->interval);
 
