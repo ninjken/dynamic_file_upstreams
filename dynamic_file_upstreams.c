@@ -12,7 +12,8 @@ static char *set_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd
 static void ngx_dynamic_file_upstreams_handler(ngx_event_t *ev);
 static ngx_int_t ngx_dynamic_file_upstreams_check_then_parse(ngx_str_t path, ngx_pool_t *pool, ngx_log_t *log);
 static ngx_int_t ngx_dynamic_file_upstreams_parse(u_char *buf, size_t size, ngx_log_t *log);
-
+// static ngx_int_t ngx_dynamic_file_upstreams_update_rr_peers();
+static void ngx_http_upstream_rr_peers_print();
 
 static ngx_event_t ngx_dynamic_file_upstreams_timer;
 time_t ngx_dynamic_file_upstreams_file_mtime;
@@ -166,6 +167,7 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
     dynamic_file_upstreams_main_conf_t *mcf = ev->data;
 
     ngx_dynamic_file_upstreams_check_then_parse(mcf->upstreams_file, mcf->pool, ev->log);
+    ngx_http_upstream_rr_peers_print();
     ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Dynamic upstreams handler called");
     if (!ngx_exiting) {
         ngx_add_timer(ev, mcf->interval);
@@ -250,14 +252,98 @@ ERROR:
 }
 
 
+typedef struct {
+    ngx_array_t                     *upstreams;       /* ngx_dynamic_file_upstream_servers_t */
+} ngx_dynamic_file_upstreams_t;
+
+
+typedef struct {
+    ngx_str_t                        upstream;      /* upstream name */
+    ngx_array_t                     *servers;       /* ngx_http_upstream_server_t */
+} ngx_dynamic_file_upstream_servers_t;
+
 static ngx_int_t
 ngx_dynamic_file_upstreams_parse(u_char *buf, size_t size, ngx_log_t *log) {
     return NGX_OK;
 }
 
 
-// static ngx_int_t
-// ngx_dynamic_file_upstreams_update_rr_peers() {
-//     // maybe update ngx_http_upstream_main_conf_t?
-//     return NGX_OK;
-// }
+static ngx_int_t
+ngx_dynamic_file_upstreams_update_rr_peers(ngx_dynamic_file_upstreams_t *us) {
+    ngx_http_upstream_main_conf_t *umcf;
+    ngx_http_upstream_srv_conf_t **uscfp;
+    ngx_dynamic_file_upstream_servers_t **dss;
+    ngx_http_upstream_server_t *us;
+    ngx_http_upstream_rr_peers_t **peers;
+    ngx_shm_zone_t *shm_zone;
+    ngx_uint_t i, j;
+
+    umcf = ngx_http_cycle_get_module_main_conf(ngx_cycle, ngx_http_upstream_module);
+    if (umcf == NULL) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "main conf of ngx_http_upstream_module not found");
+        return NGX_ERROR;
+    }
+    dss = us->upstreams->elts;
+    for (i = 0; i < us->upstreams->nelts; i++) {
+        dss = us->upstreams->elts;
+        for (j = 0; j < dss[i]->servers->nelts; j++) {
+            us = dss->servers->elts[j];
+            if (us->upstream.len == 0) {
+                ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "Upstream name is empty");
+                return NGX_ERROR;
+            }
+        }
+        ngx_http_upstream_srv_conf_t *uscf = ngx_http_upstream_add(ngx_cycle->pool, &usf->upstream, 0);
+        if (uscf == NULL) {
+            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "Failed to add upstream \"%V\"", &usf->upstream);
+            return NGX_ERROR;
+        }
+        uscf->servers = usf->servers;
+    }
+
+
+    uscfp = umcf->upstreams.elts;
+    for (i = 0; i < umcf->upstreams.nelts; i++) {
+        shm_zone = uscfp[i]->shm_zone;
+        if (shm_zone == NULL) {
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "No shared memory zone for upstream \"%V\"", &uscfp[i]->host);
+            continue;
+        }
+        peers = (ngx_http_upstream_rr_peers_t **)&shm_zone->data;
+    }
+    return NGX_OK;
+}
+
+#ifdef NGX_DEBUG
+static void
+ngx_http_upstream_rr_peers_print()
+{
+    ngx_http_upstream_main_conf_t *umcf;
+    ngx_http_upstream_srv_conf_t **uscfp;
+    ngx_http_upstream_rr_peers_t *peers;
+    ngx_http_upstream_rr_peer_t *peer;
+    ngx_uint_t i;
+
+    umcf = ngx_http_cycle_get_module_main_conf(ngx_cycle, ngx_http_upstream_module);
+    uscfp = umcf->upstreams.elts;
+    for (i = 0; i < umcf->upstreams.nelts; i++) {
+        peers = uscfp[i]->peer.data;
+        ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Upstream: %V", &uscfp[i]->host);
+        ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Peers count: %ui", peers->number);
+        for (peer = peers->peer; peer; peer = peer->next) {
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Peer: %V", &peer->server);
+        }
+        if (peers->next) {
+            peers = peers->next;
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Backup peers count: %ui", peers->next->number);
+            for (peer = peers->peer; peer; peer = peer->next) {
+                ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Backup Peer: %V", &peer->server);
+            }
+        }
+    }   
+}
+#else
+#error "Debugging function ngx_http_upstream_rr_peers_print is not defined"
+static void
+ngx_http_upstream_rr_peers_print() {}
+#endif
