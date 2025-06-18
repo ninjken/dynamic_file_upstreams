@@ -303,7 +303,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     ngx_log_t *log)
 {
     ngx_http_upstream_rr_peers_t *backup;
-    ngx_http_upstream_rr_peer_t *peer, **peerp;
+    ngx_http_upstream_rr_peer_t *peer, *old_peer, *opeer, **peerp;
     ngx_http_upstream_server_t *server;
     ngx_uint_t i, j;
     ngx_uint_t n, w, t;
@@ -327,9 +327,14 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
         return NGX_ERROR;
     }
 
+    ngx_http_upstream_rr_peers_wlock(peers)
+    old_peer = peers->peer;
     peer = ngx_slab_calloc(peers->shpool, sizeof(ngx_http_upstream_rr_peer_t) * n);
     if (peer == NULL) {
-        return NGX_ERROR;
+        ngx_log_error(NGX_LOG_EMERG, log, 0,
+                      "failed to allocate memory for upstream \"%V\" servers",
+                      &upstream->name);
+        goto ERR;
     }
     
     peers->single = (n == 1);
@@ -384,17 +389,23 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     }
 
     if (n == 0) {
-        return NGX_OK;
+        goto SUCC;
     }
 
     backup = ngx_slab_calloc(peers->shpool, sizeof(ngx_http_upstream_rr_peers_t));
     if (backup == NULL) {
-        return NGX_ERROR;
+        ngx_log_error(NGX_LOG_EMERG, log, 0,
+                      "failed to allocate memory for upstream \"%V\" backup servers",
+                      &upstream->name);
+        goto ERR;
     }
 
     peer = ngx_slab_calloc(peers->shpool, sizeof(ngx_http_upstream_rr_peer_t) * n);
     if (peer == NULL) {
-        return NGX_ERROR;
+        ngx_log_error(NGX_LOG_EMERG, log, 0,
+                      "failed to allocate memory for upstream \"%V\" backup server",
+                      &upstream->name);
+        goto ERR;
     }
 
     peers->single = 0;
@@ -432,44 +443,58 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     }
 
     peers->next = backup;
-    return NGX_OK;
-}
 
+SUCC:
 
-void ngx_dynamic_file_upstreams_copy_existing_peer(
-    ngx_http_upstream_rr_peers_t *peers,
-    ngx_http_upstream_rr_peers_t *existing_peers)
-{
-    ngx_http_upstream_rr_peer_t *peer, *existing_peer;
-
-    ngx_http_upstream_rr_peers_rlock(existing_peers);
-    for (existing_peer = existing_peers->peer; existing_peer; existing_peer = existing_peer->next) {
-        ngx_http_upstream_rr_peer_lock(existing_peers, existing_peer);
-        for (peer = peers->peer; peer; peer = peer->next) {
-            if (peer->name.len == existing_peer->name.len &&
-                ngx_strncmp(peer->name.data, existing_peer->name.data, peer->name.len) == 0 &&
-                ngx_memcmp(peer->sockaddr, existing_peer->sockaddr, existing_peer->socklen) == 0 &&
-                peer->socklen == existing_peer->socklen) {
+    for (peer = peers->peer; peer; peer = peer->next) {
+        for (opeer = old_peer; opeer; opeer = opeer->next) {
+            if (peer->name.len == opeer->name.len &&
+                ngx_strncmp(peer->name.data, opeer->name.data, peer->name.len) == 0 &&
+                ngx_memcmp(peer->sockaddr, opeer->sockaddr, opeer->socklen) == 0 &&
+                peer->socklen == opeer->socklen) {
                     ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
                         "Copying existing peer data for %V", &peer->name);
-                    peer->conns = existing_peer->conns;
-                    peer->fails = existing_peer->fails;
-                    peer->accessed = existing_peer->accessed;
-                    peer->checked = existing_peer->checked;
-                    peer->start_time = existing_peer->start_time;
-                    peer->current_weight = existing_peer->current_weight;
+                    peer->conns = opeer->conns;
+                    peer->fails = opeer->fails;
+                    peer->accessed = opeer->accessed;
+                    peer->checked = opeer->checked;
+                    peer->slow_start = opeer->slow_start;
+                    peer->start_time = opeer->start_time;
                     #if (NGX_HTTP_SSL)
-                    peer->ssl_session = existing_peer->ssl_session;
-                    peer->ssl_session_len = existing_peer->ssl_session_len;
+                    peer->ssl_session = opeer->ssl_session;
+                    peer->ssl_session_len = opeer->ssl_session_len;
                     #endif
                     break;
             }
         }
-        ngx_http_upstream_rr_peer_unlock(existing_peers, existing_peer);
     }
-    
-    ngx_http_upstream_rr_peers_unlock(existing_peers);
+
+    while (old_peer) {
+        if (old_peer->server.data) {
+            ngx_slab_free(peers->shpool, old_peer->server.data);
+        }
+
+        if (old_peer->name.data) {
+            ngx_slab_free(peers->shpool, old_peer->name.data);
+        }
+
+        if (old_peer->sockaddr) {
+            ngx_slab_free(peers->shpool, old_peer->sockaddr);
+        }
+
+        opeer = old_peer->next;
+        ngx_slab_free(peers->shpool, old_peer);
+        old_peer = opeer;
+    }
+
+    ngx_http_upstream_rr_peers_unlock(peers);
+    return NGX_OK;
+
+ERR:
+    ngx_http_upstream_rr_peers_unlock(peers);
+    return NGX_ERROR;
 }
+
 
 static ngx_int_t
 ngx_dynamic_file_upstreams_update_rr_peers(ngx_dynamic_file_upstreams_t *dfus, ngx_log_t *log) {
@@ -478,7 +503,7 @@ ngx_dynamic_file_upstreams_update_rr_peers(ngx_dynamic_file_upstreams_t *dfus, n
     ngx_dynamic_file_upstream_t **dfup;
     ngx_http_upstream_server_t **usp;
     ngx_http_upstream_rr_peers_t *peers, *existing_peers, **peersp;
-    ngx_http_upstream_rr_peer_t *peer;
+    ngx_http_upstream_rr_peer_t *peer, *old_peer;
     ngx_slab_pool_t *shpool;
     ngx_str_t name;
     ngx_uint_t i, j;
@@ -495,45 +520,25 @@ ngx_dynamic_file_upstreams_update_rr_peers(ngx_dynamic_file_upstreams_t *dfus, n
         name = dfup[i]->name;
         uscf = ngx_dynamic_file_upstreams_find_upstream_srv_conf(umcf, name);
         if (uscf == NULL) {
-            ngx_log_error(NGX_LOG_WARN, log, 0, "Upstream \"%V\" srv conf found, skip", &name);
+            ngx_log_error(NGX_LOG_ERR, log, 0, "Upstream \"%V\" srv conf found, skip", &name);
             continue;
         }
 
         if (uscf->peer.data == NULL) {
             ngx_log_error(NGX_LOG_ERR, log, 0, "No existing peers data for upstream \"%V\"", &name);
-            return NGX_ERROR;
+            continue;
         }
-        existing_peers = uscf->peer.data;
+        peers = uscf->peer.data;
 
         if (uscf->shm_zone == NULL) {
-            ngx_log_error(NGX_LOG_ERR, log, 0, "No shared memory zone for upstream \"%V\"", &name);
-            return NGX_ERROR;
+            ngx_log_error(NGX_LOG_WARN, log, 0, "No shared memory zone for upstream \"%V\"", &name);
+            continue;
         }
-        shpool = (ngx_slab_pool_t *) uscf->shm_zone->shm.addr;
-        if (shpool == NULL) {
-            ngx_log_error(NGX_LOG_ERR, log, 0, "No slab pool for upstream \"%V\"", &name);
-            return NGX_ERROR;
-        }
-
-        peers = ngx_slab_calloc(shpool, sizeof(ngx_http_upstream_rr_peers_t));
-        if (peers == NULL) {
-            ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to allocate memory from slab pool in upstream \"%V\"", &name);
-            return NGX_ERROR;
-        }
-        peers->shpool = shpool;
-        peers->name = existing_peers->name;
       
         if (ngx_dynamic_file_upstreams_init_peers(peers, dfup[i], log) != NGX_OK) {
             ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to initialize peers for upstream \"%V\"", &name);
             return NGX_ERROR;
         }
-
-        ngx_dynamic_file_upstreams_copy_existing_peer(peers, existing_peers);
-        // if (peersp != NULL) {
-        //     *peersp = peers;
-        // } else {
-        //     peersp = &peers->next;
-        // }
 
         uscf->peer.data = peers;
     }
