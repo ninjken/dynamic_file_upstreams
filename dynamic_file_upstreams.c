@@ -389,7 +389,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     }
 
     if (n == 0) {
-        goto SUCC;
+        goto FINISH;
     }
 
     backup = ngx_slab_calloc(peers->shpool, sizeof(ngx_http_upstream_rr_peers_t));
@@ -444,8 +444,9 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
 
     peers->next = backup;
 
-SUCC:
+FINISH:
 
+    /* copy stat data from existing peers */
     for (peer = peers->peer; peer; peer = peer->next) {
         for (opeer = old_peer; opeer; opeer = opeer->next) {
             if (peer->name.len == opeer->name.len &&
@@ -469,6 +470,9 @@ SUCC:
         }
     }
 
+    ngx_http_upstream_rr_peers_unlock(peers);
+
+    /* release memory from old peers */
     while (old_peer) {
         if (old_peer->server.data) {
             ngx_slab_free(peers->shpool, old_peer->server.data);
@@ -487,7 +491,6 @@ SUCC:
         old_peer = opeer;
     }
 
-    ngx_http_upstream_rr_peers_unlock(peers);
     return NGX_OK;
 
 ERR:
