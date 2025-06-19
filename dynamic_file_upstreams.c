@@ -26,7 +26,7 @@ static ngx_event_t ngx_dynamic_file_upstreams_timer;
 time_t ngx_dynamic_file_upstreams_file_mtime;
 
 
-/* upstreams_file /path/to/file interval(seconds) */
+/* upstreams_file /path/to/file interval=t */
 static ngx_command_t ngx_dynamic_file_upstreams_commands[] = {
     { ngx_string("upstreams_file"),
         NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE12,
@@ -126,6 +126,7 @@ set_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     dynamic_file_upstreams_main_conf_t *mcf;
     ngx_int_t i;
+    u_char *cp;
 
     mcf = ngx_http_cycle_get_module_main_conf(cf->cycle, ngx_dynamic_file_upstreams_module);
     ngx_memzero(mcf, sizeof(dynamic_file_upstreams_main_conf_t));
@@ -146,7 +147,18 @@ set_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     if (cf->args->nelts == 3) {
-        i = ngx_atoi(value[2].data, value[2].len);
+        cp = ngx_strlchr(value[2].data, value[2].data + value[2].len, '=');
+        if (cp == NULL) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid interval \"%V\"", &value[2]);
+            return NGX_CONF_ERROR;
+        }
+        if (ngx_strncmp(value[2].data, "interval", ngx_strlen("interval")) != 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid interval \"%V\"", &value[2]);
+            return NGX_CONF_ERROR;
+        }
+        i = ngx_atoi(cp + 1, value[2].len - ngx_strlen("interval") -1);
         if (i == NGX_ERROR || i < 0) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                "invalid interval \"%V\"", &value[2]);
