@@ -360,12 +360,15 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     ngx_dynamic_file_upstream_t *upstream,
     ngx_log_t *log)
 {
-    ngx_http_upstream_rr_peers_t *backup;
-    ngx_http_upstream_rr_peer_t *peer, *old_peer, *opeer, **peerp;
+    ngx_http_upstream_rr_peers_t *backup, *old_backup;
+    ngx_http_upstream_rr_peer_t *peer, *old_peer, **peerp, *opeer;
     ngx_http_upstream_server_t *server;
     ngx_uint_t i, j;
     ngx_uint_t n, w, t;
 
+    n = 0;
+    w = 0;
+    t = 0;
     server = upstream->servers.elts;
     for (i = 0; i < upstream->servers.nelts; i++) {
         if (server[i].backup) {
@@ -402,6 +405,10 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     peers->tries = t;
 
     n = 0;
+    w = 0;
+    t = 0;
+
+    ngx_http_upstream_rr_peers_lock(peers);
     peerp = &peers->peer;
 
     for (i = 0; i < upstream->servers.nelts; i++) {
@@ -429,6 +436,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     }
 
     /* backup servers */
+    old_backup = peers->next;
     n = 0;
     w = 0;
     t = 0;
@@ -447,6 +455,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     }
 
     if (n == 0) {
+        peers->next = NULL;
         goto FINISH;
     }
 
@@ -463,6 +472,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
         ngx_log_error(NGX_LOG_EMERG, log, 0,
                       "failed to allocate memory for upstream \"%V\" backup server",
                       &upstream->name);
+        ngx_slab_free(peers->shpool, backup);
         goto ERR;
     }
 
@@ -474,8 +484,9 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     backup->tries = t;
     backup->name = &upstream->name;
 
-    n = 0;
+    /* no need to lock backup peers here */
     peerp = &backup->peer;
+    n = 0;
     for (i = 0; i < upstream->servers.nelts; i++) {
         if (!server[i].backup) {
             continue;
@@ -504,6 +515,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
 
 FINISH:
 
+    ngx_http_upstream_rr_peers_lock(peers);
     /* copy stat data from existing peers */
     for (peer = peers->peer; peer; peer = peer->next) {
         for (opeer = old_peer; opeer; opeer = opeer->next) {
@@ -549,6 +561,29 @@ FINISH:
         old_peer = opeer;
     }
 
+    if (old_backup) {
+        old_peer = old_backup->peer;
+        while (old_peer) {
+            if (old_peer->server.data) {
+                ngx_slab_free(peers->shpool, old_peer->server.data);
+            }
+
+            if (old_peer->name.data) {
+                ngx_slab_free(peers->shpool, old_peer->name.data);
+            }
+
+            if (old_peer->sockaddr) {
+                ngx_slab_free(peers->shpool, old_peer->sockaddr);
+            }
+
+            opeer = old_peer->next;
+            ngx_slab_free(peers->shpool, old_peer);
+            old_peer = opeer;
+        }
+
+        ngx_slab_free(peers->shpool, old_backup);
+    }
+
     return NGX_OK;
 
 ERR:
@@ -561,7 +596,7 @@ static ngx_int_t
 ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *upstreams, ngx_log_t *log) {
     ngx_http_upstream_main_conf_t *umcf;
     ngx_http_upstream_srv_conf_t *uscf;
-    ngx_dynamic_file_upstream_t **dfup;
+    ngx_dynamic_file_upstream_t *dfup;
     ngx_http_upstream_rr_peers_t *peers;
     ngx_str_t name;
     ngx_uint_t i;
@@ -574,7 +609,7 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
 
     dfup = upstreams->upstreams.elts;
     for (i = 0; i < upstreams->upstreams.nelts; i++) {
-        name = dfup[i]->name;
+        name = dfup[i].name;
         uscf = ngx_dynamic_file_upstreams_find_upstream_srv_conf(umcf, name);
         if (uscf == NULL) {
             ngx_log_error(NGX_LOG_ERR, log, 0, "Upstream \"%V\" srv conf found, skip", &name);
@@ -592,7 +627,7 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
             continue;
         }
 
-        if (ngx_dynamic_file_upstreams_init_peers(peers, dfup[i], log) != NGX_OK) {
+        if (ngx_dynamic_file_upstreams_init_peers(peers, &dfup[i], log) != NGX_OK) {
             ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to initialize peers for upstream \"%V\"", &name);
             return NGX_ERROR;
         }
@@ -621,11 +656,12 @@ ngx_http_upstream_rr_peers_print(ngx_log_t *log)
         for (peer = peers->peer; peer; peer = peer->next) {
             ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "name: %V", &peer->name);
             ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "server: %V", &peer->server);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "weight: %d", peer->weight);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "max_conns: %u", peer->max_conns);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "max_fails: %u", peer->max_fails);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "fail_timeout: %ld", peer->fail_timeout);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "current_weight: %d", peer->current_weight);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "weight: %i", peer->weight);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "conns: %ui", peer->conns);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "max_conns: %ui", peer->max_conns);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "max_fails: %ui", peer->max_fails);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "fail_timeout: %T", peer->fail_timeout);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "current_weight: %i", peer->current_weight);
         }
         if (peers->next) {
             ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Backup server count: %ui", peers->next->number);
