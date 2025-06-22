@@ -316,12 +316,12 @@ ngx_dynamic_file_upstreams_parse_upstreams(const u_char *buf, size_t size, ngx_l
     /* server 1, backup */
     server = ngx_array_push(&up->servers);
     ngx_memzero(server, sizeof(ngx_http_upstream_server_t));
-    ngx_str_set(&server->name, "10.0.7.150:8080");
+    ngx_str_set(&server->name, "127.0.0.1:8080");
     server->naddrs = 1;
     server->addrs = ngx_palloc(ngx_cycle->pool, sizeof(ngx_addr_t));
-    ngx_str_set(&server->addrs->name, "10.0.7.150:8080");
-    if (ngx_parse_addr(ngx_cycle->pool, server->addrs, (u_char *)"10.0.7.150", ngx_strlen("10.0.7.150")) != NGX_OK) {
-        ngx_log_error(NGX_LOG_ERR, log, 0, "failed to parse address %s", "10.0.7.150");
+    ngx_str_set(&server->addrs->name, "127.0.0.1:8080");
+    if (ngx_parse_addr(ngx_cycle->pool, server->addrs, (u_char *)"127.0.0.1", ngx_strlen("127.0.0.1")) != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, log, 0, "failed to parse address %s", "127.0.0.1");
         return NGX_ERROR;
     }
     server->weight = 1;
@@ -621,18 +621,16 @@ ngx_http_upstream_rr_peers_print(ngx_log_t *log)
         for (peer = peers->peer; peer; peer = peer->next) {
             ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "name: %V", &peer->name);
             ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "server: %V", &peer->server);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "weight: %V", &peer->weight);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "max_conns: %V", &peer->max_conns);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "max_fails: %V", &peer->max_fails);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "fail_timeout: %V", &peer->fail_timeout);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "current_weight: %V", &peer->current_weight);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "weight: %d", peer->weight);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "max_conns: %u", peer->max_conns);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "max_fails: %u", peer->max_fails);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "fail_timeout: %ld", peer->fail_timeout);
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "current_weight: %d", peer->current_weight);
         }
         if (peers->next) {
-            peers = peers->next;
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Backup peers count: %ui", peers->next->number);
-            for (peer = peers->peer; peer; peer = peer->next) {
-                ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Backup Peer: %V", &peer->server);
-            }
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Backup server count: %ui", peers->next->number);
+            peer = peers->next->peer;
+            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Backup Peer: %V", &peer->server);
         }
     }
     
