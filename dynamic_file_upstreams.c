@@ -292,12 +292,62 @@ ERROR:
     return NGX_ERROR;
 }
 
+static ngx_int_t
+ngx_dynamic_file_upstreams_parse_syntactic_tokens() {}
 
+/* use token-based parse strategy
+   stop parsing on {, } and ;
+ */
 static ngx_int_t
 ngx_dynamic_file_upstreams_parse_upstreams(const u_char *buf, size_t size, ngx_log_t *log, ngx_dynamic_file_upstreams_t *ups)
 {
     ngx_dynamic_file_upstream_t *up;
     ngx_http_upstream_server_t *server;
+    size_t pos, start, end;
+    ngx_array_t *tokens;
+    ngx_uint_t need_space, skip_space;
+
+    pos = 0;
+    need_space = 0;
+    skip_space = 1;
+    while (pos < size) {
+        tokens = ngx_array_create(ngx_cycle->pool, 8, sizeof(ngx_str_t));
+        if (tokens == NULL) {
+            ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for tokens");
+            return NGX_ERROR;
+        }
+
+        u_char ch = buf[pos];
+        switch (ch) {
+            case ';':
+                need_space = 0;
+                skip_space = 1;
+                break;
+            case '{':
+                need_space = 0;
+                skip_space = 1;
+                break;
+            case '}':
+                need_space = 0;
+                skip_space = 1;
+            break;
+        }
+
+        if (skip_space) {
+            if (ch == " " || ch == "\t") {
+                pos++;
+                continue;
+            }
+        }
+
+        if (need_space) {
+            if (ch != " " && ch != "\t") {
+                pos++;
+                continue;
+            }
+        }
+
+    }
 
     /* create a fake upstream */
     if (NGX_ERROR == ngx_array_init(&ups->upstreams, ngx_cycle->pool, 4, sizeof(ngx_dynamic_file_upstream_t))) {
