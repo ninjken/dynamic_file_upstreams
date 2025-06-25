@@ -361,17 +361,20 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     ngx_log_t *log)
 {
     ngx_http_upstream_rr_peers_t *backup, *old_backup;
-    ngx_http_upstream_rr_peer_t *peer, *old_peer, **peerp, *opeer;
+    ngx_http_upstream_rr_peer_t *peer, *old_peer, *old_backup_peer, **peerp, *opeer;
     ngx_http_upstream_server_t *server;
     ngx_uint_t i, j;
     ngx_uint_t n, w, t;
+    ngx_int_t has_backup;
 
     n = 0;
     w = 0;
     t = 0;
+    has_backup = 0;
     server = upstream->servers.elts;
     for (i = 0; i < upstream->servers.nelts; i++) {
         if (server[i].backup) {
+            has_backup = 1;
             continue;
         }
         n += server[i].naddrs;
@@ -388,17 +391,22 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
         return NGX_ERROR;
     }
 
-    ngx_http_upstream_rr_peers_wlock(peers)
-    old_peer = peers->peer;
+
+
     peer = ngx_slab_calloc(peers->shpool, sizeof(ngx_http_upstream_rr_peer_t) * n);
     if (peer == NULL) {
         ngx_log_error(NGX_LOG_EMERG, log, 0,
                       "failed to allocate memory for upstream \"%V\" servers",
                       &upstream->name);
-        goto ERR;
+        return NGX_ERROR;
     }
     
-    peers->single = (n == 1);
+    ngx_http_upstream_rr_peers_wlock(peers)
+    if (has_backup) {
+        peers->single = 0;
+    } else {
+        peers->single = (n == 1);
+    }
     peers->number = n;
     peers->weighted = (w != n);
     peers->total_weight = w;
@@ -408,9 +416,8 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     w = 0;
     t = 0;
 
-    ngx_http_upstream_rr_peers_lock(peers);
+    old_peer = peers->peer;
     peerp = &peers->peer;
-
     for (i = 0; i < upstream->servers.nelts; i++) {
         if (server[i].backup) {
             continue;
@@ -435,87 +442,6 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
         }
     }
 
-    /* backup servers */
-    old_backup = peers->next;
-    n = 0;
-    w = 0;
-    t = 0;
-
-    for (i = 0; i < upstream->servers.nelts; i++) {
-        if (!server[i].backup) {
-            continue;
-        }
-
-        n += server[i].naddrs;
-        w += server[i].naddrs * server[i].weight;
-
-        if (!server[i].down) {
-            t += server[i].naddrs;
-        }
-    }
-
-    if (n == 0) {
-        peers->next = NULL;
-        goto FINISH;
-    }
-
-    backup = ngx_slab_calloc(peers->shpool, sizeof(ngx_http_upstream_rr_peers_t));
-    if (backup == NULL) {
-        ngx_log_error(NGX_LOG_EMERG, log, 0,
-                      "failed to allocate memory for upstream \"%V\" backup servers",
-                      &upstream->name);
-        goto ERR;
-    }
-
-    peer = ngx_slab_calloc(peers->shpool, sizeof(ngx_http_upstream_rr_peer_t) * n);
-    if (peer == NULL) {
-        ngx_log_error(NGX_LOG_EMERG, log, 0,
-                      "failed to allocate memory for upstream \"%V\" backup server",
-                      &upstream->name);
-        ngx_slab_free(peers->shpool, backup);
-        goto ERR;
-    }
-
-    peers->single = 0;
-    backup->single = 0;
-    backup->number = n;
-    backup->weighted = (w != n);
-    backup->total_weight = w;
-    backup->tries = t;
-    backup->name = &upstream->name;
-
-    /* no need to lock backup peers here */
-    peerp = &backup->peer;
-    n = 0;
-    for (i = 0; i < upstream->servers.nelts; i++) {
-        if (!server[i].backup) {
-            continue;
-        }
-
-        for (j = 0; j < server[i].naddrs; j++) {
-            peer[n].sockaddr = server[i].addrs[j].sockaddr;
-            peer[n].socklen = server[i].addrs[j].socklen;
-            peer[n].name = server[i].addrs[j].name;
-            peer[n].weight = server[i].weight;
-            peer[n].effective_weight = server[i].weight;
-            peer[n].current_weight = 0;
-            peer[n].max_conns = server[i].max_conns;
-            peer[n].max_fails = server[i].max_fails;
-            peer[n].fail_timeout = server[i].fail_timeout;
-            peer[n].down = server[i].down;
-            peer[n].server = server[i].name;
-
-            *peerp = &peer[n];
-            peerp = &peer[n].next;
-            n++;
-        }
-    }
-
-    peers->next = backup;
-
-FINISH:
-
-    ngx_http_upstream_rr_peers_lock(peers);
     /* copy stat data from existing peers */
     for (peer = peers->peer; peer; peer = peer->next) {
         for (opeer = old_peer; opeer; opeer = opeer->next) {
@@ -542,6 +468,132 @@ FINISH:
 
     ngx_http_upstream_rr_peers_unlock(peers);
 
+    /* do the same for backup servers */
+    n = 0;
+    w = 0;
+    t = 0;
+
+    if (has_backup) {
+        for (i = 0; i < upstream->servers.nelts; i++) {
+            if (!server[i].backup) {
+                continue;
+            }
+    
+            n += server[i].naddrs;
+            w += server[i].naddrs * server[i].weight;
+    
+            if (!server[i].down) {
+                t += server[i].naddrs;
+            }
+        }
+    }
+
+    if (n == 0) {
+        backup = peers->next;
+        if (backup) {
+            old_backup_peer = backup->peer;
+            ngx_slab_free(peers->shpool, backup);
+        } else {
+            old_backup_peer = NULL;
+        }
+        peers->next = NULL;
+        goto FINISH;
+    }
+
+    if (peers->next != NULL) {
+        backup = peers->next;
+        old_backup_peer = backup->peer;
+    } else {
+        backup = ngx_slab_calloc(peers->shpool, sizeof(ngx_http_upstream_rr_peers_t));
+        if (backup == NULL) {
+            ngx_log_error(NGX_LOG_EMERG, log, 0,
+                          "failed to allocate memory for upstream \"%V\" backup servers",
+                          &upstream->name);
+            return NGX_ERROR;
+        }
+        old_backup_peer = NULL;
+    }
+
+    peer = ngx_slab_calloc(peers->shpool, sizeof(ngx_http_upstream_rr_peer_t) * n);
+    if (peer == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, log, 0,
+                      "failed to allocate memory for upstream \"%V\" backup server",
+                      &upstream->name);
+        ngx_slab_free(peers->shpool, backup);
+        return NGX_ERROR;
+    }
+
+    /* put backup initialization logic here, so that memory allocation failures above do
+       not affect existing backup servers */
+    if (backup != peers->next) {
+        backup->name = peers->name;
+        backup->shpool = peers->shpool;
+        peers->next = backup;
+        old_backup_peer = NULL;
+    }
+
+    ngx_http_upstream_rr_peers_wlock(backup);
+    backup->single = 0;
+    backup->number = n;
+    backup->weighted = (w != n);
+    backup->total_weight = w;
+    backup->tries = t;
+    backup->name = &upstream->name;
+
+    peerp = &backup->peer;
+    n = 0;
+    for (i = 0; i < upstream->servers.nelts; i++) {
+        if (!server[i].backup) {
+            continue;
+        }
+
+        for (j = 0; j < server[i].naddrs; j++) {
+            peer[n].sockaddr = server[i].addrs[j].sockaddr;
+            peer[n].socklen = server[i].addrs[j].socklen;
+            peer[n].name = server[i].addrs[j].name;
+            peer[n].weight = server[i].weight;
+            peer[n].effective_weight = server[i].weight;
+            peer[n].current_weight = 0;
+            peer[n].max_conns = server[i].max_conns;
+            peer[n].max_fails = server[i].max_fails;
+            peer[n].fail_timeout = server[i].fail_timeout;
+            peer[n].down = server[i].down;
+            peer[n].server = server[i].name;
+
+            *peerp = &peer[n];
+            peerp = &peer[n].next;
+            n++;
+        }
+    }
+
+    /* again, copy stat data from existing backup peers */
+    for (peer = backup->peer; peer; peer = peer->next) {
+        for (opeer = old_backup_peer; opeer; opeer = opeer->next) {
+            if (peer->name.len == opeer->name.len &&
+                ngx_strncmp(peer->name.data, opeer->name.data, peer->name.len) == 0 &&
+                ngx_memcmp(peer->sockaddr, opeer->sockaddr, opeer->socklen) == 0 &&
+                peer->socklen == opeer->socklen) {
+                    ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+                        "Copying existing peer data for backup server %V", &peer->name);
+                    peer->conns = opeer->conns;
+                    peer->fails = opeer->fails;
+                    peer->accessed = opeer->accessed;
+                    peer->checked = opeer->checked;
+                    peer->slow_start = opeer->slow_start;
+                    peer->start_time = opeer->start_time;
+                    #if (NGX_HTTP_SSL)
+                    peer->ssl_session = opeer->ssl_session;
+                    peer->ssl_session_len = opeer->ssl_session_len;
+                    #endif
+                    break;
+            }
+        }
+    }
+
+    ngx_http_upstream_rr_peers_unlock(backup)
+
+FINISH:
+
     /* release memory from old peers */
     while (old_peer) {
         if (old_peer->server.data) {
@@ -561,34 +613,25 @@ FINISH:
         old_peer = opeer;
     }
 
-    if (old_backup) {
-        old_peer = old_backup->peer;
-        while (old_peer) {
-            if (old_peer->server.data) {
-                ngx_slab_free(peers->shpool, old_peer->server.data);
-            }
-
-            if (old_peer->name.data) {
-                ngx_slab_free(peers->shpool, old_peer->name.data);
-            }
-
-            if (old_peer->sockaddr) {
-                ngx_slab_free(peers->shpool, old_peer->sockaddr);
-            }
-
-            opeer = old_peer->next;
-            ngx_slab_free(peers->shpool, old_peer);
-            old_peer = opeer;
+    while (old_backup_peer) {
+        if (old_backup_peer->server.data) {
+            ngx_slab_free(peers->shpool, old_backup_peer->server.data);
         }
 
-        ngx_slab_free(peers->shpool, old_backup);
+        if (old_backup_peer->name.data) {
+            ngx_slab_free(peers->shpool, old_backup_peer->name.data);
+        }
+
+        if (old_backup_peer->sockaddr) {
+            ngx_slab_free(peers->shpool, old_backup_peer->sockaddr);
+        }
+
+        opeer = old_backup_peer->next;
+        ngx_slab_free(peers->shpool, old_backup_peer);
+        old_peer = opeer;
     }
 
     return NGX_OK;
-
-ERR:
-    ngx_http_upstream_rr_peers_unlock(peers);
-    return NGX_ERROR;
 }
 
 
