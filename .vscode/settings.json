@@ -1,5 +1,6 @@
 {
     "C_Cpp.default.includePath": [
-        "${workspaceFolder:nginx}/**"
+        "${workspaceFolder:nginx}/**",
+        "${workspaceFolder}/**"
     ]
 }
