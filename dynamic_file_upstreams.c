@@ -279,7 +279,6 @@ ngx_dynamic_file_upstreams_parse(ngx_file_t *file, ngx_pool_t *pool, ngx_dynamic
     }
 
     if (n > 0) {
-        ngx_log_error(NGX_LOG_DEBUG, log, 0, "Dynamic upstreams file content: %s", buf);
         if (NGX_ERROR == ngx_dynamic_file_upstreams_parse_upstreams(&buf, log, pool, upstreams)) {
             ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to parse dynamic upstreams file \"%V\"", &file->name);
             return NGX_ERROR;            
@@ -464,6 +463,7 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
     }
     flag = OUTSIDE_UPSTREAM;
     line_start = 1;
+    token = ngx_array_push(tokens);
     while (ngx_dynamic_file_upstreams_parse_next_token(buf, line_start, token) == NGX_OK) {
         line_start = 0;
         if (ngx_strncmp(token->data, "{", ngx_strlen("{")) == 0) {
