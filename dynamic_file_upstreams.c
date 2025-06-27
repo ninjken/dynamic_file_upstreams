@@ -338,12 +338,11 @@ ngx_dynamic_file_upstreams_parse_next_token(ngx_buf_t *buf, ngx_uint_t line_star
             return NGX_OK;
         }
 
+        buf->pos++;
+        token->len++;
         if (ch == '{' || ch == '}' || ch == ';') {
             return NGX_OK;
         }
-
-        token->len++;
-        buf->pos++;
     }
 
     if (token->len > 0) {
@@ -455,7 +454,7 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
         INSIDE_UPSTREAM = 2,
     };
 
-    
+    ngx_array_init(&ups->upstreams, pool, 4, sizeof(ngx_dynamic_file_upstream_t));
     tokens = ngx_array_create(pool, 4, sizeof(ngx_str_t));
     if (tokens == NULL) {
         ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for tokens");
@@ -463,8 +462,13 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
     }
     flag = OUTSIDE_UPSTREAM;
     line_start = 1;
-    token = ngx_array_push(tokens);
-    while (ngx_dynamic_file_upstreams_parse_next_token(buf, line_start, token) == NGX_OK) {
+    while (buf->pos < buf->end) {
+        token = ngx_array_push(tokens);
+        ngx_str_null(token);
+        if (ngx_dynamic_file_upstreams_parse_next_token(buf, line_start, token) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ERR, log, 0, "failed to parse token");
+            return NGX_ERROR;
+        }
         line_start = 0;
         if (ngx_strncmp(token->data, "{", ngx_strlen("{")) == 0) {
             if (flag != OUTSIDE_UPSTREAM) {
@@ -511,7 +515,6 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
             }
         } else {
             // go on parsing
-            token = ngx_array_push(tokens);
             continue;
         }
 
@@ -520,6 +523,9 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
             ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for tokens");
             return NGX_ERROR;
         }
+
+        token = ngx_array_push(tokens);
+        ngx_str_null(token);
     }
 
     return NGX_OK;
