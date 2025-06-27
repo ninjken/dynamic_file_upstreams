@@ -138,7 +138,8 @@ set_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     dynamic_file_upstreams_main_conf_t *mcf;
     ngx_int_t i;
-    u_char *cp;
+    size_t len;
+    ngx_str_t interval;
 
     mcf = ngx_http_cycle_get_module_main_conf(cf->cycle, ngx_dynamic_file_upstreams_module);
     ngx_memzero(mcf, sizeof(dynamic_file_upstreams_main_conf_t));
@@ -159,25 +160,23 @@ set_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     if (cf->args->nelts == 3) {
-        cp = ngx_strlchr(value[2].data, value[2].data + value[2].len, '=');
-        if (cp == NULL) {
+        len = ngx_strlen("interval=");
+        if (ngx_strncmp(value[2].data, "interval=", len) != 0) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                "invalid interval \"%V\"", &value[2]);
             return NGX_CONF_ERROR;
         }
-        if (ngx_strncmp(value[2].data, "interval", ngx_strlen("interval")) != 0) {
-            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                               "invalid interval \"%V\"", &value[2]);
-            return NGX_CONF_ERROR;
-        }
-        i = ngx_atoi(cp + 1, value[2].len - ngx_strlen("interval") -1);
+
+        interval.data = value[2].data + len;
+        interval.len = value[2].len - len;
+        i = ngx_parse_time(&interval, 0);
         if (i == NGX_ERROR || i < 0) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                "invalid interval \"%V\"", &value[2]);
             return NGX_CONF_ERROR;
         }
 
-        mcf->interval = i * 1000;
+        mcf->interval = i;
     } else {
         mcf->interval = 60 * 1000;
     }
