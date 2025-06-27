@@ -361,6 +361,8 @@ ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ngx_log_t *log, ngx
     ngx_url_t u;
     ngx_str_t *token;
     ngx_uint_t i;
+    ngx_int_t val;
+
     token = tokens->elts;
     if (tokens->nelts < 2) {
         ngx_log_error(NGX_LOG_ERR, log, 0, "server definition takes at least one argument");
@@ -376,10 +378,10 @@ ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ngx_log_t *log, ngx
     u.default_port = 80;
     if (ngx_parse_url(ngx_cycle->pool, &u) != NGX_OK) {
         if (u.err) {
-            ngx_conf_log_error(NGX_LOG_EMERG, log, 0,
+            ngx_log_error(NGX_LOG_EMERG, log, 0,
                             "%s in upstream \"%V\"", u.err, &u.url);
         }
-        return NGX_CONF_ERROR;
+        return NGX_ERROR;
     }
     server->name = u.url;
     server->naddrs = u.naddrs;
@@ -392,39 +394,44 @@ ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ngx_log_t *log, ngx
     for (i = 2; i < tokens->nelts; i++) {
 
         if (ngx_strncmp(token[i].data, "weight=", ngx_strlen("weight=")) == 0) {
-            server->weight = ngx_atoi(token[i].data + ngx_strlen("weight="), token[i].len - ngx_strlen("weight="));
-            if (server->weight == NGX_ERROR || server->weight <= 0) {
+            val = ngx_atoi(token[i].data + ngx_strlen("weight="), token[i].len - ngx_strlen("weight="));
+            if (val <= 0) {
                 ngx_log_error(NGX_LOG_ERR, log, 0, "invalid weight value for server \"%V\"", &server->name);
                 return NGX_ERROR;
             }
+            server->weight = val;
         } else if (ngx_strncmp(token[i].data, "max_conns=", ngx_strlen("max_conns=")) == 0) {
-            server->max_conns = ngx_atoi(token[i].data + ngx_strlen("max_conns="), token[i].len - ngx_strlen("max_conns="));
-            if (server->max_conns == NGX_ERROR || server->max_conns <= 0) {
+            val = ngx_atoi(token[i].data + ngx_strlen("max_conns="), token[i].len - ngx_strlen("max_conns="));
+            if (val <= 0) {
                 ngx_log_error(NGX_LOG_ERR, log, 0, "invalid max_conns value for server \"%V\"", &server->name);
                 return NGX_ERROR;
             }
+            server->max_conns = val;
         } else if (ngx_strncmp(token[i].data, "max_fails=", ngx_strlen("max_fails=")) == 0) {
-            server->max_fails = ngx_atoi(token[i].data + ngx_strlen("max_fails="), token[i].len - ngx_strlen("max_fails="));
-            if (server->max_fails == NGX_ERROR || server->max_fails <= 0) {
+            val = ngx_atoi(token[i].data + ngx_strlen("max_fails="), token[i].len - ngx_strlen("max_fails="));
+            if (val <= 0) {
                 ngx_log_error(NGX_LOG_ERR, log, 0, "invalid max_fails value for server \"%V\"", &server->name);
                 return NGX_ERROR;
             }
+            server->max_fails = val;
         } else if (ngx_strncmp(token[i].data, "fail_timeout=", ngx_strlen("fail_timeout=")) == 0) {
-            server->fail_timeout = ngx_parse_time(&token[i], 1);
-            if (server->fail_timeout == NGX_ERROR || server->fail_timeout <= 0) {
+            val = ngx_parse_time(&token[i], 1);
+            if (val <= 0) {
                 ngx_log_error(NGX_LOG_ERR, log, 0, "invalid fail_timeout value for server \"%V\"", &server->name);
                 return NGX_ERROR;
             }
+            server->fail_timeout = val;
         } else if (ngx_strncmp(token[i].data, "backup", ngx_strlen("backup")) == 0) {
             server->backup = 1;
         } else if (ngx_strncmp(token[i].data, "down", ngx_strlen("down")) == 0) {
             server->down = 1;
         } else if (ngx_strncmp(token[i].data, "slow_start=", ngx_strlen("slow_start=")) == 0) {
-            server->slow_start = ngx_parse_time(&token[i], 1);
-            if (server->slow_start == NGX_ERROR || server->slow_start < 0) {
+            val = ngx_parse_time(&token[i], 1);
+            if (val < 0) {
                 ngx_log_error(NGX_LOG_ERR, log, 0, "invalid slow_start value for server \"%V\"", &server->name);
                 return NGX_ERROR;
             }
+            server->slow_start = val;
         } else {
             ngx_log_error(NGX_LOG_ERR, log, 0, "unknown server parameter \"%V\" for server \"%V\"", &token[i], &server->name);
             return NGX_ERROR;
@@ -445,7 +452,6 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
     ngx_array_t *tokens;
     ngx_uint_t flag, line_start;
     ngx_str_t *token;
-    ngx_str_t tk;
     enum {
         OUTSIDE_UPSTREAM = 1,
         INSIDE_UPSTREAM = 2,
@@ -471,7 +477,7 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
                 ngx_log_error(NGX_LOG_ERR, log, 0, "upstream definition must have exactly one name");
                 return NGX_ERROR;
             }
-            if (ngx_str_cmp(((ngx_str_t *)tokens->elts)[0], "upstream", ngx_strlen("upstream")) != 0) {
+            if (ngx_strncmp(((ngx_str_t *)tokens->elts)[0].data, "upstream", ngx_strlen("upstream")) != 0) {
                 ngx_log_error(NGX_LOG_ERR, log, 0, "expected \"upstream\" keyword before upstream name");
                 return NGX_ERROR;
             }
@@ -546,7 +552,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     ngx_dynamic_file_upstream_t *upstream,
     ngx_log_t *log)
 {
-    ngx_http_upstream_rr_peers_t *backup, *old_backup;
+    ngx_http_upstream_rr_peers_t *backup;
     ngx_http_upstream_rr_peer_t *peer, *old_peer, *old_backup_peer, **peerp, *opeer;
     ngx_http_upstream_server_t *server;
     ngx_uint_t i, j;
