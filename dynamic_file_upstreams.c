@@ -24,10 +24,10 @@ static void *dynamic_file_upstreams_create_main_conf(ngx_conf_t *cf);
 static ngx_int_t ngx_dynamic_file_upstreams_init_process(ngx_cycle_t *cycle);
 static char *set_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static void ngx_dynamic_file_upstreams_handler(ngx_event_t *ev);
-static ngx_int_t ngx_dynamic_file_upstreams_parse(ngx_file_t *file, ngx_dynamic_file_upstreams_t *upstreams);
+static ngx_int_t ngx_dynamic_file_upstreams_parse(ngx_file_t *file, ngx_pool_t *pool, ngx_dynamic_file_upstreams_t *upstreams);
 static ngx_int_t ngx_dynamic_file_upstreams_parse_next_token(ngx_buf_t *buf, ngx_uint_t line_start, ngx_str_t *token);
 static ngx_int_t ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_pool_t *pool, ngx_dynamic_file_upstreams_t *upstreams);
-static ngx_int_t ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ngx_log_t *log, ngx_http_upstream_server_t *server);
+static ngx_int_t ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ngx_log_t *log, ngx_pool_t *pool, ngx_http_upstream_server_t *server);
 static ngx_http_upstream_srv_conf_t *ngx_dynamic_file_upstreams_find_upstream_srv_conf(
     ngx_http_upstream_main_conf_t *umcf, ngx_str_t upstream);
 static void ngx_http_upstream_rr_peers_print(ngx_log_t *log);
@@ -211,20 +211,26 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
     }
 
     file.log = ev->log;
-    if (NGX_ERROR == ngx_dynamic_file_upstreams_parse(&file, &upstreams)) {
-        ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Dynamic upstreams file parse failed, \"%V\"", &file.name);
+    ngx_pool_t *temp_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, ev->log);
+    if (temp_pool == NULL) {
+        ngx_log_error(NGX_LOG_ERR, ev->log, 0, "failed to create temp pool");
         return;
     }
 
-    ngx_http_upstream_rr_peers_print(ev->log);
-    if (NGX_ERROR == ngx_dynamic_file_upstreams_update_rr_peers(&upstreams, ev->log)) {
-        ngx_log_error(NGX_LOG_ERR, ev->log, 0, "Failed to update rr peers from dynamic upstreams file \"%V\"", &file.name);
+    if (NGX_ERROR == ngx_dynamic_file_upstreams_parse(&file, temp_pool, &upstreams)) {
+        ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Dynamic upstreams file parse failed, \"%V\"", &file.name);
     } else {
-        ngx_dynamic_file_upstreams_file_mtime = mtime;
-        ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Dynamic upstreams handler called");
+        ngx_http_upstream_rr_peers_print(ev->log);
+        if (NGX_ERROR == ngx_dynamic_file_upstreams_update_rr_peers(&upstreams, ev->log)) {
+            ngx_log_error(NGX_LOG_ERR, ev->log, 0, "Failed to update rr peers from dynamic upstreams file \"%V\"", &file.name);
+        } else {
+            ngx_dynamic_file_upstreams_file_mtime = mtime;
+            ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Dynamic upstreams handler called");
+        }
+        ngx_http_upstream_rr_peers_print(ev->log);
     }
-    ngx_http_upstream_rr_peers_print(ev->log);
-
+    
+    ngx_destroy_pool(temp_pool);
     if (!ngx_exiting) {
         ngx_add_timer(ev, mcf->interval);
     } else {
@@ -234,7 +240,7 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
 
 
 static ngx_int_t
-ngx_dynamic_file_upstreams_parse(ngx_file_t *file, ngx_dynamic_file_upstreams_t *upstreams)
+ngx_dynamic_file_upstreams_parse(ngx_file_t *file, ngx_pool_t *pool, ngx_dynamic_file_upstreams_t *upstreams)
 {
     off_t size;
     ngx_buf_t buf;
@@ -250,13 +256,13 @@ ngx_dynamic_file_upstreams_parse(ngx_file_t *file, ngx_dynamic_file_upstreams_t 
     file->fd = ngx_open_file(file->name.data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
     if (file->fd == NGX_INVALID_FILE) {
         ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "Failed to open dynamic upstreams file \"%V\"", &file->name);
-        goto ERROR;
+        return NGX_ERROR;
     }
 
-    buf.start = ngx_pcalloc(ngx_cycle->pool, size);
+    buf.start = ngx_pcalloc(pool, size);
     if (buf.start == NULL) {
         ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to allocate memory for dynamic upstreams file buffer");
-        return NGX_ERROR;
+        goto ERROR;
     }
     buf.end = buf.start + size;
     buf.pos = buf.start;
@@ -270,28 +276,22 @@ ngx_dynamic_file_upstreams_parse(ngx_file_t *file, ngx_dynamic_file_upstreams_t 
 
     if (ngx_close_file(file->fd) == NGX_FILE_ERROR) {
         ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "Failed to close dynamic upstreams file \"%V\"", &file->name);
-        goto ERROR;
+        return NGX_ERROR;
     }
-    file->fd = NGX_INVALID_FILE;
 
     if (n > 0) {
         ngx_log_error(NGX_LOG_DEBUG, log, 0, "Dynamic upstreams file content: %s", buf);
-        if (NGX_ERROR == ngx_dynamic_file_upstreams_parse_upstreams(&buf, log, ngx_cycle->pool, upstreams)) {
+        if (NGX_ERROR == ngx_dynamic_file_upstreams_parse_upstreams(&buf, log, pool, upstreams)) {
             ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to parse dynamic upstreams file \"%V\"", &file->name);
-            goto ERROR;
+            return NGX_ERROR;            
         }
     }
 
-    ngx_pfree(ngx_cycle->pool, buf.start);
     return NGX_OK;
 
 ERROR:
-    if (buf.start != NULL) {
-        ngx_pfree(ngx_cycle->pool, buf.start);
-    }
-
-    if (file->fd != NGX_INVALID_FILE) {
-        ngx_close_file(file->fd);
+    if (ngx_close_file(file->fd) == NGX_FILE_ERROR) {
+        ngx_log_error(NGX_LOG_ERR, log, ngx_errno, "Failed to close dynamic upstreams file \"%V\"", &file->name);
     }
     return NGX_ERROR;
 }
@@ -356,7 +356,7 @@ ngx_dynamic_file_upstreams_parse_next_token(ngx_buf_t *buf, ngx_uint_t line_star
 }
 
 static ngx_int_t
-ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ngx_log_t *log, ngx_http_upstream_server_t *server)
+ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ngx_log_t *log, ngx_pool_t *pool, ngx_http_upstream_server_t *server)
 {
     ngx_url_t u;
     ngx_str_t *token;
@@ -369,14 +369,14 @@ ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ngx_log_t *log, ngx
         return NGX_ERROR;
     }
     if (ngx_strncmp(token[0].data, "server", ngx_strlen("server")) != 0) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "expected \"server\" keyword");
+        ngx_log_error(NGX_LOG_ERR, log, 0, "expected \"server\" keyword");
         return NGX_ERROR;
     }
 
     ngx_memzero(&u, sizeof(ngx_url_t));
     u.url = token[1];
     u.default_port = 80;
-    if (ngx_parse_url(ngx_cycle->pool, &u) != NGX_OK) {
+    if (ngx_parse_url(pool, &u) != NGX_OK) {
         if (u.err) {
             ngx_log_error(NGX_LOG_EMERG, log, 0,
                             "%s in upstream \"%V\"", u.err, &u.url);
@@ -505,7 +505,7 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
                     ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for new server");
                     return NGX_ERROR;
                 }
-                if (ngx_dynamic_file_upstreams_parse_server(tokens, log, server) != NGX_OK) {
+                if (ngx_dynamic_file_upstreams_parse_server(tokens, log, pool, server) != NGX_OK) {
                     ngx_log_error(NGX_LOG_ERR, log, 0, "failed to parse server definition");
                     return NGX_ERROR;
                 }
@@ -548,8 +548,7 @@ ngx_dynamic_file_upstreams_find_upstream_srv_conf(ngx_http_upstream_main_conf_t 
 
 /* code is largely copied from ngx_http_upstream_init_round_robin */
 static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
-    ngx_http_upstream_rr_peers_t *peers,
-    ngx_dynamic_file_upstream_t *upstream,
+    ngx_http_upstream_rr_peers_t *peers, ngx_dynamic_file_upstream_t *upstream,
     ngx_log_t *log)
 {
     ngx_http_upstream_rr_peers_t *backup;
@@ -641,7 +640,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
                 ngx_strncmp(peer->name.data, opeer->name.data, peer->name.len) == 0 &&
                 ngx_memcmp(peer->sockaddr, opeer->sockaddr, opeer->socklen) == 0 &&
                 peer->socklen == opeer->socklen) {
-                    ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+                    ngx_log_error(NGX_LOG_DEBUG, log, 0,
                         "Copying existing peer data for %V", &peer->name);
                     peer->conns = opeer->conns;
                     peer->fails = opeer->fails;
@@ -764,7 +763,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
                 ngx_strncmp(peer->name.data, opeer->name.data, peer->name.len) == 0 &&
                 ngx_memcmp(peer->sockaddr, opeer->sockaddr, opeer->socklen) == 0 &&
                 peer->socklen == opeer->socklen) {
-                    ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+                    ngx_log_error(NGX_LOG_DEBUG, log, 0,
                         "Copying existing peer data for backup server %V", &peer->name);
                     peer->conns = opeer->conns;
                     peer->fails = opeer->fails;
@@ -837,7 +836,7 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
 
     umcf = ngx_http_cycle_get_module_main_conf(ngx_cycle, ngx_http_upstream_module);
     if (umcf == NULL) {
-        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "main conf of ngx_http_upstream_module not found");
+        ngx_log_error(NGX_LOG_ERR, log, 0, "main conf of ngx_http_upstream_module not found");
         return NGX_ERROR;
     }
 
@@ -885,22 +884,22 @@ ngx_http_upstream_rr_peers_print(ngx_log_t *log)
     uscfp = umcf->upstreams.elts;
     for (i = 0; i < umcf->upstreams.nelts; i++) {
         peers = uscfp[i]->peer.data;
-        ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Upstream: %V", &uscfp[i]->host);
-        ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Peers count: %ui", peers->number);
+        ngx_log_error(NGX_LOG_DEBUG, log, 0, "Upstream: %V", &uscfp[i]->host);
+        ngx_log_error(NGX_LOG_DEBUG, log, 0, "Peers count: %ui", peers->number);
         for (peer = peers->peer; peer; peer = peer->next) {
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "name: %V", &peer->name);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "server: %V", &peer->server);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "weight: %i", peer->weight);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "conns: %ui", peer->conns);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "max_conns: %ui", peer->max_conns);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "max_fails: %ui", peer->max_fails);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "fail_timeout: %T", peer->fail_timeout);
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "current_weight: %i", peer->current_weight);
+            ngx_log_error(NGX_LOG_DEBUG, log, 0, "name: %V", &peer->name);
+            ngx_log_error(NGX_LOG_DEBUG, log, 0, "server: %V", &peer->server);
+            ngx_log_error(NGX_LOG_DEBUG, log, 0, "weight: %i", peer->weight);
+            ngx_log_error(NGX_LOG_DEBUG, log, 0, "conns: %ui", peer->conns);
+            ngx_log_error(NGX_LOG_DEBUG, log, 0, "max_conns: %ui", peer->max_conns);
+            ngx_log_error(NGX_LOG_DEBUG, log, 0, "max_fails: %ui", peer->max_fails);
+            ngx_log_error(NGX_LOG_DEBUG, log, 0, "fail_timeout: %T", peer->fail_timeout);
+            ngx_log_error(NGX_LOG_DEBUG, log, 0, "current_weight: %i", peer->current_weight);
         }
         if (peers->next) {
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Backup server count: %ui", peers->next->number);
+            ngx_log_error(NGX_LOG_DEBUG, log, 0, "Backup server count: %ui", peers->next->number);
             peer = peers->next->peer;
-            ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0, "Backup Peer: %V", &peer->server);
+            ngx_log_error(NGX_LOG_DEBUG, log, 0, "Backup Peer: %V", &peer->server);
         }
     }
     
