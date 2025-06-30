@@ -438,9 +438,6 @@ ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ngx_log_t *log, ngx
 }
 
 
-/* use token-based parse strategy
-   stop parsing on {, } and ;
- */
 static ngx_int_t
 ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_pool_t *pool, ngx_dynamic_file_upstreams_t *ups)
 {
@@ -471,43 +468,46 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
         if (token.len == 0) {
             continue;
         }
-        if (ngx_strncmp(token.data, "{", ngx_strlen("{")) == 0) {
-            if (flag != OUTSIDE_UPSTREAM) {
-                ngx_log_error(NGX_LOG_ERR, log, 0, "unexpected \"{\" inside upstream definition");
-                return NGX_ERROR;
-            }
-            flag = INSIDE_UPSTREAM;
-            if (tokens->nelts != 2) {
-                ngx_log_error(NGX_LOG_ERR, log, 0, "upstream definition must have exactly one name");
-                return NGX_ERROR;
-            }
-            if (ngx_strncmp(((ngx_str_t *)tokens->elts)[0].data, "upstream", ngx_strlen("upstream")) != 0) {
-                ngx_log_error(NGX_LOG_ERR, log, 0, "expected \"upstream\" keyword before upstream name");
-                return NGX_ERROR;
-            }
-            // upstream name logic
-            up = ngx_array_push(&ups->upstreams);
-            up->name = ((ngx_str_t *)tokens->elts)[1];
-            if (ngx_array_init(&up->servers, pool, 4, sizeof(ngx_http_upstream_server_t)) != NGX_OK) {
-                ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for upstream servers");
-                return NGX_ERROR;
-            }
-        } else if (ngx_strncmp(token.data, "}", ngx_strlen("}")) == 0) {
-            if (flag != INSIDE_UPSTREAM) {
-                ngx_log_error(NGX_LOG_ERR, log, 0, "unexpected \"}\" outside upstream definition");
-                return NGX_ERROR;
-            }
-            flag = OUTSIDE_UPSTREAM;
-            // end of upstream definition logic
-        } else if (ngx_strncmp(token.data, ";", ngx_strlen(";")) == 0) {
-            // server/algo definition logic
-            if (flag != INSIDE_UPSTREAM) {
-                ngx_log_error(NGX_LOG_ERR, log, 0, "unexpected \";\" outside upstream definition");
-                return NGX_ERROR;
-            }
-            if (tokens->nelts == 1) {
-                /* todo: algo part */
-            } else {
+        if (token.len == 1) {
+            switch (token.data[0]) {
+            case '{':
+                if (flag != OUTSIDE_UPSTREAM) {
+                    ngx_log_error(NGX_LOG_ERR, log, 0, "unexpected \"{\" inside upstream definition");
+                    return NGX_ERROR;
+                }
+                flag = INSIDE_UPSTREAM;
+                if (tokens->nelts != 2) {
+                    ngx_log_error(NGX_LOG_ERR, log, 0, "upstream definition must have exactly one name");
+                    return NGX_ERROR;
+                }
+                if (ngx_strncmp(((ngx_str_t *)tokens->elts)[0].data, "upstream", ngx_strlen("upstream")) != 0) {
+                    ngx_log_error(NGX_LOG_ERR, log, 0, "expected \"upstream\" keyword before upstream name");
+                    return NGX_ERROR;
+                }
+                // upstream name logic
+                up = ngx_array_push(&ups->upstreams);
+                up->name = ((ngx_str_t *)tokens->elts)[1];
+                if (ngx_array_init(&up->servers, pool, 4, sizeof(ngx_http_upstream_server_t)) != NGX_OK) {
+                    ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for upstream servers");
+                    return NGX_ERROR;
+                }
+                break;
+            case '}':
+                if (flag != INSIDE_UPSTREAM) {
+                    ngx_log_error(NGX_LOG_ERR, log, 0, "unexpected \"}\" outside upstream definition");
+                    return NGX_ERROR;
+                }
+                flag = OUTSIDE_UPSTREAM;
+                break;
+            case ';':
+                if (flag != INSIDE_UPSTREAM) {
+                    ngx_log_error(NGX_LOG_ERR, log, 0, "unexpected \";\" outside upstream definition");
+                    return NGX_ERROR;
+                }
+                if (tokens->nelts < 2) {
+                    ngx_log_error(NGX_LOG_ERR, log, 0, "server definition requires at least one argument");
+                    return NGX_ERROR;
+                }
                 server = ngx_array_push(&up->servers);
                 if (server == NULL) {
                     ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for new server");
@@ -518,20 +518,23 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
                     ngx_log_error(NGX_LOG_ERR, log, 0, "failed to parse server definition");
                     return NGX_ERROR;
                 }
+                break;
+            default:
+                goto NEXT_TOKEN;
             }
-        } else {
-            next_token = ngx_array_push(tokens);
-            *next_token = token;
-            /* go on parsing */
+            
+            /* process next semantic section */
+            tokens = ngx_array_create(pool, 4, sizeof(ngx_str_t));
+            if (tokens == NULL) {
+                ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for tokens");
+                return NGX_ERROR;
+            }
             continue;
         }
 
-        /* process next semantic block */
-        tokens = ngx_array_create(pool, 4, sizeof(ngx_str_t));
-        if (tokens == NULL) {
-            ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for tokens");
-            return NGX_ERROR;
-        }
+NEXT_TOKEN:
+        next_token = ngx_array_push(tokens);
+        *next_token = token;
     }
 
     return NGX_OK;
