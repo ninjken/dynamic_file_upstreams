@@ -197,7 +197,7 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
     dynamic_file_upstreams_main_conf_t *mcf = ev->data;
     ngx_file_t file;
     time_t mtime;
-    ngx_dynamic_file_upstreams_t upstreams;
+    ngx_dynamic_file_upstreams_t ups;
 
     file.name = mcf->upstreams_file;
     if (ngx_file_info(file.name.data, &file.info) == NGX_FILE_ERROR) {
@@ -218,10 +218,10 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
         return;
     }
 
-    if (NGX_ERROR == ngx_dynamic_file_upstreams_parse(&file, temp_pool, &upstreams)) {
+    if (NGX_ERROR == ngx_dynamic_file_upstreams_parse(&file, temp_pool, &ups)) {
         ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Dynamic upstreams file parse failed, \"%V\"", &file.name);
     } else {
-        if (NGX_ERROR == ngx_dynamic_file_upstreams_update_rr_peers(&upstreams, ev->log)) {
+        if (NGX_ERROR == ngx_dynamic_file_upstreams_update_rr_peers(&ups, ev->log)) {
             ngx_log_error(NGX_LOG_ERR, ev->log, 0, "Failed to update rr peers from dynamic upstreams file \"%V\"", &file.name);
         } else {
             ngx_dynamic_file_upstreams_file_mtime = mtime;
@@ -836,7 +836,7 @@ FINISH:
 
 
 static ngx_int_t
-ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *upstreams, ngx_log_t *log) {
+ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *ups, ngx_log_t *log) {
     ngx_http_upstream_main_conf_t *umcf;
     ngx_http_upstream_srv_conf_t *uscf;
     ngx_dynamic_file_upstream_t *dfup;
@@ -850,8 +850,8 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
         return NGX_ERROR;
     }
 
-    dfup = upstreams->upstreams.elts;
-    for (i = 0; i < upstreams->upstreams.nelts; i++) {
+    dfup = ups->upstreams.elts;
+    for (i = 0; i < ups->upstreams.nelts; i++) {
         name = dfup[i].name;
         uscf = ngx_dynamic_file_upstreams_find_upstream_srv_conf(umcf, name);
         if (uscf == NULL) {

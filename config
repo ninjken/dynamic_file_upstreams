@@ -1,7 +1,6 @@
 ngx_module_type=HTTP
 ngx_module_name=ngx_dynamic_file_upstreams_module
 ngx_module_srcs="$ngx_addon_dir/dynamic_file_upstreams.c"
-ngx_module_deps="$ngx_addon_dir/dynamic_file_upstreams.h"
 
 . auto/module
 
