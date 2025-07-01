@@ -8,7 +8,8 @@
 - Compatibiliy with Nginx version
 - Installation
 - Author
-- See Also
+- License
+- TODO
  
 ## Name
 ngx_dynamic_file_upstreams_module
@@ -101,6 +102,9 @@ For dynamic module build, there will be *ngx_dynamic_file_upstreams_module.so* i
 ninjken endeavourken@outlook.com
 
 Please raise issues if you find any problem :-).
+
+## License
+The code is licensed under Apache 2.0 License.
 
 ## TODO
 - support random load-balance method
