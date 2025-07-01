@@ -20,7 +20,7 @@ Nginx is a famous high permormance reverse proxy and HTTP server. However, its c
 2. [ngx_dynamic_upstream](https://github.com/cubicdaiya/ngx_dynamic_upstream) module exposes HTTP API for upstream modification
 3. [nginx-upsync-module](https://github.com/weibocom/nginx-upsync-module) achieves this by making use of Consul/Etcd
 
-This module takes a file-based approach and have nginx parse an upstreams text file when it is changed and reload upstreams automatically.
+This module, however, takes a file-based approach and have nginx parse an upstreams text file when it is modified and automatically reload upstreams defined in it.
 
 ## Synopsis
 Nginx configuration
@@ -56,19 +56,42 @@ upstream test_upstream {
 }
 ```
 
-the format of upstreams file is basically the same as Nginx upstream block, except that only server line is allowed (zone and upstream selection algo are disallowed).
+the format of upstreams file is basically the same as Nginx upstream block, except that only server line is allowed (zone and upstream load-balance method are disallowed).
 
 ## Directives
 
 `upstreams_file /path/to/upstreams_file interval=t`
 
 ## Caveats and Limitations
-In order for the new upstreams to work, `zone` directive must be present in the original nginx upstream configuration, since the implementation uses shared memory to share upstream information across worker processes.
+File-based dynamic upstreams relies on upstream 'zone' feature(shared memory across worker processes). Therefore, the `zone` directive must be present in the original nginx upstream block. If not, upstream configuration will be skipped with a warn log message. Besides, the load balance method cannot be changed in the new upstream configuration.
+Note that load balance method 'ramdom' is not working yet, since it involves some extra initialization step than other methods.
 
-- Compatibiliy with Nginx version
-- Installation
-- Author
-- See Also
+## Compatibiliy with Nginx version
+Tested with Nginx version 1.29.0 on Linux, earlier versions should work just fine. Windows platform is not yet tested.
+
+## Installation
+Please follow standard module compilation step
+
+    ./auto/configure --add-module=/path/to/module_dir
+
+or
+
+    ./auto/configure --add-dynamic-module=/path/to/module_dir
+
+then
+
+    make
+
+For dynamic module, there is ngx_dynamic_file_upstreams_module.so in folder objs/ which can be loaded via 'load_module' directive.
+
+## Author
+ninjken endeavourken@outlook.com
+Please raise issues if you find a problem
+
+## TODO
+- support random load-balance method
+- add Nginx tests
+
 
 
 
