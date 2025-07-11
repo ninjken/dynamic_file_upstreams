@@ -104,10 +104,11 @@ ninjken endeavourken@outlook.com
 Please raise issues if you find any problem :-).
 
 ## License
-The code is licensed under Apache 2.0 License.
+MIT License.
 
 ## TODO
 - support random load-balance method
+- add directive to print stats for upstreams(for debugging/testing purpose)
 - add standard Nginx tests
 
 

@@ -1,14 +1,13 @@
-/* use ngx_http_upstream_zone_module.c and ngx_http_auth_basic_module.c
-   and ngx_http_upstream.c as references */
-
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
 
 
 #ifndef NGX_HTTP_UPSTREAM_ZONE
-#error NGX_HTTP_UPSTREAM_ZONE must be enabled
+#error http_upstream_zone_module must be enabled
 #endif
+
+#define DEFAULT_DYNAMIC_UPSTREAMS_INTERVAL 60
 
 
 typedef struct {
@@ -19,6 +18,12 @@ typedef struct {
     ngx_str_t                        name;          /* upstream name */
     ngx_array_t                      servers;       /* ngx_http_upstream_server_t */
 } ngx_dynamic_file_upstream_t;
+
+typedef struct {
+    ngx_str_t upstreams_file;
+    ngx_msec_t interval;
+} dynamic_file_upstreams_main_conf_t;
+
 
 typedef struct {
     ngx_str_t upstreams_file;
@@ -40,8 +45,10 @@ static ngx_http_upstream_srv_conf_t *ngx_dynamic_file_upstreams_find_upstream_sr
 static ngx_int_t ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *upstreams, ngx_log_t *log);
 
 
+/* recursive timer for parsing dynamic upstream file */
 static ngx_event_t ngx_dynamic_file_upstreams_timer;
-time_t ngx_dynamic_file_upstreams_file_mtime;
+/* modification time of the dynamic upstream file */
+static time_t ngx_dynamic_file_upstreams_file_mtime;
 
 
 /* upstreams_file /path/to/file interval=time */
@@ -55,7 +62,6 @@ static ngx_command_t ngx_dynamic_file_upstreams_commands[] = {
 
     ngx_null_command
 };
-
 
 /* module context */
 static ngx_http_module_t ngx_dynamic_file_upstreams_module_ctx = {
@@ -108,7 +114,8 @@ ngx_dynamic_file_upstreams_init_process(ngx_cycle_t *cycle)
     dynamic_file_upstreams_main_conf_t *mcf;
 
     if (ngx_worker != 0) {
-        return NGX_OK;  /* only the master process should set the timer */
+        /* only the first worker process sets the timer */
+        return NGX_OK;
     }
 
     mcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_dynamic_file_upstreams_module);
@@ -180,7 +187,7 @@ set_dynamic_file_upstreams_timer(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
         mcf->interval = i;
     } else {
-        mcf->interval = 60 * 1000;
+        mcf->interval = DEFAULT_DYNAMIC_UPSTREAMS_INTERVAL * 1000;
     }
 
     ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0,
@@ -438,6 +445,9 @@ ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ngx_log_t *log, ngx
 }
 
 
+/* use token-based parse strategy
+   stop parsing on {, } and ;
+ */
 static ngx_int_t
 ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_pool_t *pool, ngx_dynamic_file_upstreams_t *ups)
 {
@@ -560,7 +570,7 @@ ngx_dynamic_file_upstreams_find_upstream_srv_conf(ngx_http_upstream_main_conf_t 
 }
 
 
-/* implementation is built on ngx_http_upstream_init_round_robin */
+/* heavy reference from ngx_http_upstream_init_round_robin */
 static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     ngx_http_upstream_rr_peers_t *peers, ngx_dynamic_file_upstream_t *upstream,
     ngx_log_t *log)
