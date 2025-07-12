@@ -648,9 +648,14 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
         }
 
         for (j = 0; j < server[i].naddrs; j++) {
-            peer[n].sockaddr = server[i].addrs[j].sockaddr;
+            peer[n].sockaddr = ngx_slab_calloc(peers->shpool, sizeof(ngx_sockaddr_t));
+            ngx_memcpy(peer[n].sockaddr, server[i].addrs[j].sockaddr, server[i].addrs[j].socklen);
             peer[n].socklen = server[i].addrs[j].socklen;
-            peer[n].name = server[i].addrs[j].name;
+
+            peer[n].name.data = ngx_slab_calloc(peers->shpool, NGX_SOCKADDR_STRLEN);
+            ngx_memcpy(peer[n].name.data, server[i].addrs[j].name.data, server[i].addrs[j].name.len);
+            peer[n].name.len = server[i].addrs[j].name.len;
+
             peer[n].weight = server[i].weight;
             peer[n].effective_weight = server[i].weight;
             peer[n].current_weight = 0;
@@ -658,7 +663,10 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
             peer[n].max_fails = server[i].max_fails;
             peer[n].fail_timeout = server[i].fail_timeout;
             peer[n].down = server[i].down;
-            peer[n].server = server[i].name;
+
+            peer[n].server.data = ngx_slab_calloc(peers->shpool, server[i].name.len);
+            ngx_memcpy(peer[n].server.data, server[i].name.data, server[i].name.len);
+            peer[n].server.len = server[i].name.len;
 
             *peerp = &peer[n];
             peerp = &peer[n].next;
@@ -769,9 +777,14 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
         }
 
         for (j = 0; j < server[i].naddrs; j++) {
-            peer[n].sockaddr = server[i].addrs[j].sockaddr;
+            peer[n].sockaddr = ngx_slab_calloc(peers->shpool, sizeof(ngx_sockaddr_t));
+            ngx_memcpy(peer[n].sockaddr, server[i].addrs[j].sockaddr, server[i].addrs[j].socklen);
             peer[n].socklen = server[i].addrs[j].socklen;
-            peer[n].name = server[i].addrs[j].name;
+
+            peer[n].name.data = ngx_slab_calloc(peers->shpool, NGX_SOCKADDR_STRLEN);
+            ngx_memcpy(peer[n].name.data, server[i].addrs[j].name.data, server[i].addrs[j].name.len);
+            peer[n].name.len = server[i].addrs[j].name.len;
+
             peer[n].weight = server[i].weight;
             peer[n].effective_weight = server[i].weight;
             peer[n].current_weight = 0;
@@ -779,7 +792,10 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
             peer[n].max_fails = server[i].max_fails;
             peer[n].fail_timeout = server[i].fail_timeout;
             peer[n].down = server[i].down;
-            peer[n].server = server[i].name;
+
+            peer[n].server.data = ngx_slab_calloc(peers->shpool, server[i].name.len);
+            ngx_memcpy(peer[n].server.data, server[i].name.data, server[i].name.len);
+            peer[n].server.len = server[i].name.len;
 
             *peerp = &peer[n];
             peerp = &peer[n].next;
