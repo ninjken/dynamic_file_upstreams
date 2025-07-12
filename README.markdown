@@ -78,8 +78,6 @@ The default unit is second.
 First and foremost, only upstreams which are already defined in the original Nginx configuration can be specified in the upstream file. Namely, one cannot add new upstreams at runtime.
 Secondly, file-based dynamic upstreams relies on upstream 'zone' feature(shared memory across worker processes). Therefore, the `zone` directive must be present in the original nginx upstream block. If not, new upstream configuration will be skipped with a warn nginx log message.
 
-Note that currently load balance method 'ramdom' is not working, since it involves some extra initialization step than other methods.
-
 ## Compatibiliy with Nginx version
 Tested with Nginx version 1.29.0 on Linux, earlier versions should work just fine. Windows platform is not yet tested.
 
@@ -107,9 +105,8 @@ Please raise issues if you find any problem :-).
 MIT License.
 
 ## TODO
-- support random load-balance method
-- add directive to print stats for upstreams(for debugging/testing purpose)
 - add standard Nginx tests
+- add directive to print stats for upstreams(for debugging/testing purpose)
 
 
 

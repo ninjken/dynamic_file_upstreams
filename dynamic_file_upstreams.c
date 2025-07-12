@@ -14,21 +14,30 @@ typedef struct {
     ngx_array_t                      upstreams;     /* ngx_dynamic_file_upstream_t */
 } ngx_dynamic_file_upstreams_t;
 
+
 typedef struct {
     ngx_str_t                        name;          /* upstream name */
     ngx_array_t                      servers;       /* ngx_http_upstream_server_t */
 } ngx_dynamic_file_upstream_t;
 
+
 typedef struct {
     ngx_str_t upstreams_file;
     ngx_msec_t interval;
 } dynamic_file_upstreams_main_conf_t;
 
 
+/* copied from http/modules/ngx_http_upstream_random_module.c */
 typedef struct {
-    ngx_str_t upstreams_file;
-    ngx_msec_t interval;
-} dynamic_file_upstreams_main_conf_t;
+    ngx_http_upstream_rr_peer_t          *peer;
+    ngx_uint_t                            range;
+} ngx_http_upstream_random_range_t;
+
+
+typedef struct {
+    ngx_uint_t                            two;
+    ngx_http_upstream_random_range_t     *ranges;
+} ngx_http_upstream_random_srv_conf_t;
 
 
 /* function declarations */
@@ -45,6 +54,7 @@ static ngx_http_upstream_srv_conf_t *ngx_dynamic_file_upstreams_find_upstream_sr
 static ngx_int_t ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *upstreams, ngx_log_t *log);
 
 
+extern ngx_module_t ngx_http_upstream_random_module;
 /* recursive timer for parsing dynamic upstream file */
 static ngx_event_t ngx_dynamic_file_upstreams_timer;
 /* modification time of the dynamic upstream file */
@@ -494,7 +504,6 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
                     ngx_log_error(NGX_LOG_ERR, log, 0, "expected \"upstream\" keyword before upstream name");
                     return NGX_ERROR;
                 }
-                // upstream name logic
                 up = ngx_array_push(&ups->upstreams);
                 up->name = ((ngx_str_t *)tokens->elts)[1];
                 if (ngx_array_init(&up->servers, pool, 4, sizeof(ngx_http_upstream_server_t)) != NGX_OK) {
@@ -851,6 +860,7 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
     ngx_http_upstream_srv_conf_t *uscf;
     ngx_dynamic_file_upstream_t *dfup;
     ngx_http_upstream_rr_peers_t *peers;
+    ngx_http_upstream_random_srv_conf_t *rcf;
     ngx_str_t name;
     ngx_uint_t i;
 
@@ -883,6 +893,12 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
         if (ngx_dynamic_file_upstreams_init_peers(peers, &dfup[i], log) != NGX_OK) {
             ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to initialize peers for upstream \"%V\"", &name);
             return NGX_ERROR;
+        }
+
+        rcf = ngx_http_conf_upstream_srv_conf(uscf, ngx_http_upstream_random_module);
+        if (rcf != NULL) {
+            /* force ngx_http_upstream_update_random to be called, see function ngx_http_upstream_init_random_peer */
+            rcf->ranges = NULL;
         }
     }
 
