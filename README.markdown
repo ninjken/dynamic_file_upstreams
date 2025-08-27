@@ -75,8 +75,7 @@ where time is any valid time interval supported by Nginx, see https://nginx.org/
 The default unit is second.
 
 ## Caveats and Limitations
-First and foremost, only upstreams which are already defined in the original Nginx configuration can be specified in the upstream file. Namely, one cannot add new upstreams at runtime.
-Secondly, file-based dynamic upstreams relies on upstream 'zone' feature(shared memory across worker processes). Therefore, the `zone` directive must be present in the original nginx upstream block. If not, new upstream configuration will be skipped with a warn nginx log message.
+Only upstreams which are already defined in the original Nginx configuration can be specified in the upstream file. In other words, one cannot add new upstreams at runtime(existing upstreams, if not specified in the upstream file, will not get deleted and stay untouched)
 
 ## Compatibiliy with Nginx version
 Tested with Nginx version 1.29.0 on Linux, earlier versions should work just fine. Windows platform is not yet tested.
@@ -106,8 +105,7 @@ MIT License.
 
 ## TODO
 - add standard Nginx tests
-- add directive to print stats for upstreams(for debugging/testing purpose)
-
+- memory leak test?
 
 
 
