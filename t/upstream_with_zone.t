@@ -2,16 +2,16 @@ use v5.36;
 use Test::More;
 
 BEGIN { use FindBin; chdir($FindBin::Bin); }
-use lib "$FindBin::Bin/lib";
+use lib "$FindBin::Bin/../../../nginx-tests/lib";
 use Test::Nginx;
 
 use IO::Handle;
 STDERR->autoflush(1);
 STDOUT->autoflush(1);
 
-my $t = Test::Nginx->new()->has(qw/http proxy unix/);
+my $t = Test::Nginx->new()->has(qw/http proxy/);
 
-$t->write_file_expand('nginx.conf', <<'EOF');
+$t->write_file_expand( 'nginx.conf', <<'EOF' );
 
 %%TEST_GLOBALS%%
 
@@ -23,7 +23,7 @@ events {
 http {
     %%TEST_GLOBALS_HTTP%%
 
-  upstreams_file test_upstream interval=6s;
+    upstreams_file %%TESTDIR%%/test_upstream interval=6s;
 
     upstream backend_servers {
         zone backend_zone 64k;
@@ -31,7 +31,7 @@ http {
     }
 
     server {
-        listen 8080;
+        listen 127.0.0.1:8080;
 
         location / {
             proxy_pass http://backend_servers/;
@@ -40,7 +40,6 @@ http {
 
     server {
         listen       127.0.0.1:8081-8082;
-        listen       unix:/tmp/unix.sock;
 
         location / {
             return 200 "$server_addr:$server_port";
@@ -50,25 +49,20 @@ http {
 
 EOF
 
-$t->write_file("test_upstream", <<'EOF');
+$t->write_file( "test_upstream", <<'EOF' );
 
 upstream backend_servers {
     server 127.0.0.1:8082;
-    server unix:/tmp/unix.sock;
     server 1.2.3.4:9990 backup;
     server 1.2.3.4:9991 down;
 }
 
 EOF
 
-$t->try_run('ipv4')->plan(12);
+$t->try_run('test ipv4')->plan(2);
 
-# tests with inet socket
+like( http_get('/'), qr/127.0.0.1:8081/, 'initially 8081' );
 
-my $socket = IO::Socket::INET->new(
-			Proto => 'tcp',
-			PeerAddr => '127.0.0.1:' . 8081,
-		);
-like(http_get('/', {
-    socket => $socket
-}), qr/404 Not Found/, 'initially 8081 is not in upstream');
+sleep 7;
+
+like( http_get('/'), qr/127.0.0.1:8082/, 'dynamic upstream file parsed' );
