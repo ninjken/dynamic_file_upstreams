@@ -466,6 +466,7 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
         ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for upstreams");
         return NGX_ERROR;
     }
+    up = NULL;
 
     tokens = ngx_array_create(pool, 4, sizeof(ngx_str_t));
     if (tokens == NULL) {
@@ -508,6 +509,7 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
                     return NGX_ERROR;
                 }
                 flag = OUTSIDE_UPSTREAM;
+                up = NULL;
                 break;
             case ';':
                 if (flag != INSIDE_UPSTREAM) {
@@ -516,6 +518,11 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
                 }
                 if (tokens->nelts < 2) {
                     ngx_log_error(NGX_LOG_ERR, log, 0, "server definition requires at least one argument");
+                    return NGX_ERROR;
+                }
+
+                if (up == NULL) {
+                    ngx_log_error(NGX_LOG_ERR, log, 0, "server definition must reside inside an upstream block");
                     return NGX_ERROR;
                 }
                 server = ngx_array_push(&up->servers);
