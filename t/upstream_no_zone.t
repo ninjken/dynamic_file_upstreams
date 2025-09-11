@@ -59,11 +59,11 @@ EOF
 
 $t->write_file( "test_upstream", <<'EOF' );
 
-    upstream backend_servers {
-        server 127.0.0.1:8082;
-        server 1.2.3.4:9991 down;
-        server 1.2.3.4:9990 backup;
-    }
+upstream backend_servers {
+    server 127.0.0.1:8082;
+    server 1.2.3.4:9991 down;
+    server 1.2.3.4:9990 backup;
+}
 
 EOF
 
