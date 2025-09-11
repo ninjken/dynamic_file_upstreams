@@ -1,6 +1,5 @@
-# basic test with upstreams_file and zone directive
-
-# upstreams_file check interval is 6 seconds
+# basic test without zone directive and two worker processes, so that we know that
+# both worker processes can update the upstreams from the file.
 
 ###############################################################################
 
@@ -23,7 +22,7 @@ $t->write_file_expand( 'nginx.conf', <<'EOF' );
 
 daemon off;
 
-worker_processes  2;
+worker_processes 2;
 
 events {
 }
