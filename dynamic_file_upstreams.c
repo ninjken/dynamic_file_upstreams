@@ -869,6 +869,9 @@ FINISH:
             }
 
             opeer = old_peer->next;
+            ngx_log_error(NGX_LOG_DEBUG, log, 0,
+                "Freeing old peer %V", &old_peer->name);
+
             ngx_slab_free(peers->shpool, old_peer);
             old_peer = opeer;
         }
@@ -887,6 +890,8 @@ FINISH:
             }
 
             opeer = old_backup_peer->next;
+            ngx_log_error(NGX_LOG_DEBUG, log, 0,
+                "Freeing old backup peer %V", &old_backup_peer->name);
             ngx_slab_free(peers->shpool, old_backup_peer);
             old_backup_peer = opeer;
         }

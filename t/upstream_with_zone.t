@@ -1,3 +1,9 @@
+# basic test with upstreams_file and zone directive
+
+# upstreams_file check interval is 6 seconds
+
+###############################################################################
+
 use v5.36;
 use Test::More;
 
@@ -9,7 +15,7 @@ use IO::Handle;
 STDERR->autoflush(1);
 STDOUT->autoflush(1);
 
-my $t = Test::Nginx->new()->has(qw/http proxy/);
+my $t = Test::Nginx->new()->has(qw/http proxy unix/);
 
 $t->write_file_expand( 'nginx.conf', <<'EOF' );
 
@@ -17,17 +23,20 @@ $t->write_file_expand( 'nginx.conf', <<'EOF' );
 
 daemon off;
 
+load_module /home/ken/documents/nginx_test/ngx_dynamic_file_upstreams_module.so;
+
 events {
 }
 
 http {
     %%TEST_GLOBALS_HTTP%%
 
-    upstreams_file %%TESTDIR%%/test_upstream interval=6s;
+    upstreams_file %%TESTDIR%%/test_upstream interval=3s;
 
     upstream backend_servers {
         zone backend_zone 64k;
         server 127.0.0.1:8081;
+        server 1.2.3.4:8000 backup;
     }
 
     server {
@@ -40,6 +49,7 @@ http {
 
     server {
         listen       127.0.0.1:8081-8082;
+        listen       unix:/tmp/dynamic_upstream.sock;
 
         location / {
             return 200 "$server_addr:$server_port";
@@ -51,18 +61,33 @@ EOF
 
 $t->write_file( "test_upstream", <<'EOF' );
 
-upstream backend_servers {
-    server 127.0.0.1:8082;
-    server 1.2.3.4:9990 backup;
-    server 1.2.3.4:9991 down;
-}
+    upstream backend_servers {
+        server 127.0.0.1:8082;
+        server 1.2.3.4:9990 backup;
+    }
 
 EOF
 
-$t->try_run('test ipv4')->plan(2);
+        # server 1.2.3.4:9991 down;
+
+$t->try_run('test ipv4')->plan(3);
 
 like( http_get('/'), qr/127.0.0.1:8081/, 'initially 8081' );
 
-sleep 7;
+sleep 4;
 
 like( http_get('/'), qr/127.0.0.1:8082/, 'dynamic upstream file parsed' );
+
+sleep 4;
+
+# update dynamic upstream file again
+$t->write_file( "test_upstream", <<'EOF' );
+
+upstream backend_servers {
+    server unix:/tmp/dynamic_upstream.sock;
+}
+
+EOF
+sleep 4;
+
+like( http_get('/'), qr!unix:/tmp/dynamic_upstream.sock!, 'dynamic upstream file modified' );
