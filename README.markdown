@@ -7,6 +7,7 @@
 - Caveats and Limitations
 - Compatibiliy with Nginx version
 - Installation
+- Testing
 - Author
 - License
 - TODO
@@ -95,6 +96,9 @@ then
 
 For dynamic module build, there will be *ngx_dynamic_file_upstreams_module.so* in folder objs/ which can be loaded by nginx via 'load_module' directive.
 
+## Testing
+Tests are based on [nginx-tests](github.com:nginx/nginx-tests.git), test files are in folder t/ and are written, you know, in Perl.
+
 ## Author
 ninjken endeavourken@outlook.com
 
@@ -104,8 +108,4 @@ Please raise issues if you find any problem :-).
 MIT License.
 
 ## TODO
-- add standard Nginx tests
-- memory leak test?
-
-
-
+- add more tests, regarding different load balance methods and upstream server options such as fail_timeout and max_fails.

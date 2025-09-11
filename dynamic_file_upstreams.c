@@ -48,6 +48,8 @@ static ngx_int_t ngx_dynamic_file_upstreams_parse_server(ngx_array_t *tokens, ng
 static ngx_http_upstream_srv_conf_t *ngx_dynamic_file_upstreams_find_upstream_srv_conf(
     ngx_http_upstream_main_conf_t *umcf, ngx_str_t upstream);
 static ngx_int_t ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *upstreams, ngx_log_t *log);
+static void* ngx_dynamic_file_upstreams_alloc_helper(ngx_http_upstream_rr_peers_t *peers, size_t size);
+static void ngx_dynamic_file_upstreams_free_helper(ngx_http_upstream_rr_peers_t *peers, void *ptr);
 
 
 extern ngx_module_t ngx_http_upstream_random_module;
@@ -55,7 +57,12 @@ extern ngx_module_t ngx_http_upstream_random_module;
 static ngx_event_t ngx_dynamic_file_upstreams_timer;
 /* modification time of the dynamic upstream file */
 static time_t ngx_dynamic_file_upstreams_file_mtime;
-
+/* a list of names of once modified upstreams.
+  In function ngx_http_upstream_zone_copy_peer, peers are allocated one by one.
+  But in our case, peers are allocated in one slab memory allocation (see ngx_dynamic_file_upstreams_init_peers).
+  As a result, we must be able to tell whether to free one by one or just once. It's achieved by keeping a record
+  of those upstreams which were modified */
+static ngx_list_t modified_upstream_list;
 
 /* upstreams_file /path/to/file interval=time */
 static ngx_command_t ngx_dynamic_file_upstreams_commands[] = {
@@ -131,6 +138,8 @@ ngx_dynamic_file_upstreams_init_process(ngx_cycle_t *cycle)
     }
 
     ngx_dynamic_file_upstreams_file_mtime = 0;
+    ngx_list_init(&modified_upstream_list, ngx_cycle->pool, 4, sizeof(ngx_str_t));
+
     ngx_memzero(&ngx_dynamic_file_upstreams_timer, sizeof(ngx_event_t));
     ngx_dynamic_file_upstreams_timer.handler = ngx_dynamic_file_upstreams_handler;
     ngx_dynamic_file_upstreams_timer.data = mcf;
@@ -206,6 +215,7 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
     ngx_file_t file;
     time_t mtime;
     ngx_dynamic_file_upstreams_t ups;
+    ngx_pool_t *temp_pool;
 
     file.name = mcf->upstreams_file;
     if (ngx_file_info(file.name.data, &file.info) == NGX_FILE_ERROR) {
@@ -216,11 +226,11 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
     mtime = ngx_file_mtime(&file.info);
     if (mtime == ngx_dynamic_file_upstreams_file_mtime) {
         ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Dynamic upstreams file mtime unchanged, skip processing");
-        return;
+        goto NEXT_ROUND;
     }
 
     file.log = ev->log;
-    ngx_pool_t *temp_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, ev->log);
+    temp_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, ev->log);
     if (temp_pool == NULL) {
         ngx_log_error(NGX_LOG_ERR, ev->log, 0, "failed to create temp pool");
         return;
@@ -238,6 +248,8 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
     }
     
     ngx_destroy_pool(temp_pool);
+
+NEXT_ROUND:
     if (!ngx_exiting) {
         ngx_add_timer(ev, mcf->interval);
     } else {
@@ -466,6 +478,7 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
         ngx_log_error(NGX_LOG_ERR, log, 0, "failed to allocate memory for upstreams");
         return NGX_ERROR;
     }
+    up = NULL;
 
     tokens = ngx_array_create(pool, 4, sizeof(ngx_str_t));
     if (tokens == NULL) {
@@ -508,6 +521,7 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
                     return NGX_ERROR;
                 }
                 flag = OUTSIDE_UPSTREAM;
+                up = NULL;
                 break;
             case ';':
                 if (flag != INSIDE_UPSTREAM) {
@@ -516,6 +530,11 @@ ngx_dynamic_file_upstreams_parse_upstreams(ngx_buf_t *buf, ngx_log_t *log, ngx_p
                 }
                 if (tokens->nelts < 2) {
                     ngx_log_error(NGX_LOG_ERR, log, 0, "server definition requires at least one argument");
+                    return NGX_ERROR;
+                }
+
+                if (up == NULL) {
+                    ngx_log_error(NGX_LOG_ERR, log, 0, "server definition must reside inside an upstream block");
                     return NGX_ERROR;
                 }
                 server = ngx_array_push(&up->servers);
@@ -570,13 +589,13 @@ ngx_dynamic_file_upstreams_find_upstream_srv_conf(ngx_http_upstream_main_conf_t 
 }
 
 static void*
-ngx_dynamic_file_upstreams_calloc_helper(ngx_http_upstream_rr_peers_t *peers, size_t size) {
+ngx_dynamic_file_upstreams_alloc_helper(ngx_http_upstream_rr_peers_t *peers, size_t size) {
 #if (NGX_HTTP_UPSTREAM_ZONE)
     if (peers->shpool) {
-        return ngx_slab_calloc(peers->shpool, size);
+        return ngx_slab_alloc(peers->shpool, size);
     }
 #endif
-    return ngx_pcalloc(ngx_cycle->pool, size);
+    return ngx_palloc(ngx_cycle->pool, size);
 }
 
 static void
@@ -591,14 +610,14 @@ ngx_dynamic_file_upstreams_free_helper(ngx_http_upstream_rr_peers_t *peers, void
 /* heavy reference from ngx_http_upstream_init_round_robin */
 static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     ngx_http_upstream_rr_peers_t *peers, ngx_dynamic_file_upstream_t *upstream,
-    ngx_log_t *log)
+    ngx_int_t was_modified, ngx_log_t *log)
 {
     ngx_http_upstream_rr_peers_t *backup;
     ngx_http_upstream_rr_peer_t *peer, *old_peer, *old_backup_peer, **peerp, *opeer;
     ngx_http_upstream_server_t *server;
     ngx_uint_t i, j;
     ngx_uint_t n, w, t;
-    ngx_int_t has_backup, is_backup_calloc;
+    ngx_int_t has_backup, is_backup_alloc;
 
     n = 0;
     w = 0;
@@ -624,7 +643,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
         return NGX_ERROR;
     }
 
-    peer = ngx_dynamic_file_upstreams_calloc_helper(peers, sizeof(ngx_http_upstream_rr_peer_t) * n);
+    peer = ngx_dynamic_file_upstreams_alloc_helper(peers, sizeof(ngx_http_upstream_rr_peer_t) * n);
     if (peer == NULL) {
         ngx_log_error(NGX_LOG_EMERG, log, 0,
                       "failed to allocate memory for upstream \"%V\" servers",
@@ -655,11 +674,11 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
         }
 
         for (j = 0; j < server[i].naddrs; j++) {
-            peer[n].sockaddr = ngx_dynamic_file_upstreams_calloc_helper(peers, sizeof(ngx_sockaddr_t));
+            peer[n].sockaddr = ngx_dynamic_file_upstreams_alloc_helper(peers, sizeof(ngx_sockaddr_t));
             ngx_memcpy(peer[n].sockaddr, server[i].addrs[j].sockaddr, server[i].addrs[j].socklen);
             peer[n].socklen = server[i].addrs[j].socklen;
 
-            peer[n].name.data = ngx_dynamic_file_upstreams_calloc_helper(peers, NGX_SOCKADDR_STRLEN);
+            peer[n].name.data = ngx_dynamic_file_upstreams_alloc_helper(peers, NGX_SOCKADDR_STRLEN);
             ngx_memcpy(peer[n].name.data, server[i].addrs[j].name.data, server[i].addrs[j].name.len);
             peer[n].name.len = server[i].addrs[j].name.len;
 
@@ -671,7 +690,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
             peer[n].fail_timeout = server[i].fail_timeout;
             peer[n].down = server[i].down;
 
-            peer[n].server.data = ngx_dynamic_file_upstreams_calloc_helper(peers, server[i].name.len);
+            peer[n].server.data = ngx_dynamic_file_upstreams_alloc_helper(peers, server[i].name.len);
             ngx_memcpy(peer[n].server.data, server[i].name.data, server[i].name.len);
             peer[n].server.len = server[i].name.len;
 
@@ -739,26 +758,26 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
 
     if (peers->next != NULL) {
         backup = peers->next;
+        is_backup_alloc = 0;
         old_backup_peer = backup->peer;
-        is_backup_calloc = 0;
     } else {
-        backup = ngx_dynamic_file_upstreams_calloc_helper(peers, sizeof(ngx_http_upstream_rr_peers_t));
+        backup = ngx_dynamic_file_upstreams_alloc_helper(peers, sizeof(ngx_http_upstream_rr_peers_t));
         if (backup == NULL) {
             ngx_log_error(NGX_LOG_EMERG, log, 0,
                           "failed to allocate memory for upstream \"%V\" backup servers",
                           &upstream->name);
             return NGX_ERROR;
         }
-        is_backup_calloc = 1;
+        is_backup_alloc = 1;
         old_backup_peer = NULL;
     }
 
-    peer = ngx_dynamic_file_upstreams_calloc_helper(peers, sizeof(ngx_http_upstream_rr_peer_t) * n);
+    peer = ngx_dynamic_file_upstreams_alloc_helper(peers, sizeof(ngx_http_upstream_rr_peer_t) * n);
     if (peer == NULL) {
         ngx_log_error(NGX_LOG_EMERG, log, 0,
                       "failed to allocate memory for upstream \"%V\" backup server",
                       &upstream->name);
-        if (is_backup_calloc) {
+        if (is_backup_alloc) {
             ngx_dynamic_file_upstreams_free_helper(peers, backup);
         }
         return NGX_ERROR;
@@ -790,11 +809,11 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
         }
 
         for (j = 0; j < server[i].naddrs; j++) {
-            peer[n].sockaddr = ngx_dynamic_file_upstreams_calloc_helper(peers, sizeof(ngx_sockaddr_t));
+            peer[n].sockaddr = ngx_dynamic_file_upstreams_alloc_helper(peers, sizeof(ngx_sockaddr_t));
             ngx_memcpy(peer[n].sockaddr, server[i].addrs[j].sockaddr, server[i].addrs[j].socklen);
             peer[n].socklen = server[i].addrs[j].socklen;
 
-            peer[n].name.data = ngx_dynamic_file_upstreams_calloc_helper(peers, NGX_SOCKADDR_STRLEN);
+            peer[n].name.data = ngx_dynamic_file_upstreams_alloc_helper(peers, NGX_SOCKADDR_STRLEN);
             ngx_memcpy(peer[n].name.data, server[i].addrs[j].name.data, server[i].addrs[j].name.len);
             peer[n].name.len = server[i].addrs[j].name.len;
 
@@ -806,7 +825,7 @@ static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
             peer[n].fail_timeout = server[i].fail_timeout;
             peer[n].down = server[i].down;
 
-            peer[n].server.data = ngx_dynamic_file_upstreams_calloc_helper(peers, server[i].name.len);
+            peer[n].server.data = ngx_dynamic_file_upstreams_alloc_helper(peers, server[i].name.len);
             ngx_memcpy(peer[n].server.data, server[i].name.data, server[i].name.len);
             peer[n].server.len = server[i].name.len;
 
@@ -845,6 +864,7 @@ FINISH:
     /* release only shared memory from old peers */
 #if (NGX_HTTP_UPSTREAM_ZONE)
     if (peers->shpool) {
+        peer = old_peer;
         while (old_peer) {
             if (old_peer->server.data) {
                 ngx_slab_free(peers->shpool, old_peer->server.data);
@@ -859,10 +879,17 @@ FINISH:
             }
 
             opeer = old_peer->next;
-            ngx_slab_free(peers->shpool, old_peer);
+            if (!was_modified) {
+                ngx_slab_free(peers->shpool, old_peer);
+            }
             old_peer = opeer;
         }
 
+        if (was_modified) {
+            ngx_slab_free(peers->shpool, peer);
+        }
+
+        peer = old_backup_peer;
         while (old_backup_peer) {
             if (old_backup_peer->server.data) {
                 ngx_slab_free(peers->shpool, old_backup_peer->server.data);
@@ -877,8 +904,14 @@ FINISH:
             }
 
             opeer = old_backup_peer->next;
-            ngx_slab_free(peers->shpool, old_backup_peer);
+            if (!was_modified) {
+                ngx_slab_free(peers->shpool, old_backup_peer);
+            }
             old_backup_peer = opeer;
+        }
+
+        if (was_modified) {
+            ngx_slab_free(peers->shpool, peer);
         }
     }
 #endif
@@ -894,8 +927,9 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
     ngx_dynamic_file_upstream_t *dfup;
     ngx_http_upstream_rr_peers_t *peers;
     ngx_http_upstream_random_srv_conf_t *rcf;
-    ngx_str_t name;
-    ngx_uint_t i;
+    ngx_str_t name, *v, *up_name;
+    ngx_uint_t i, found;
+    ngx_list_part_t *part;
 
     umcf = ngx_http_cycle_get_module_main_conf(ngx_cycle, ngx_http_upstream_module);
     if (umcf == NULL) {
@@ -918,19 +952,48 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
         }
         peers = uscf->peer.data;
 
+        found = 0;
 #if (NGX_HTTP_UPSTREAM_ZONE)
         if (uscf->shm_zone) {
             /* for upstreams with zone info(shared memory), only the first worker process does the update */
             if (ngx_worker != 0) {
                 return NGX_OK;
             }
+            
+            /* check whether this upstream was once modified */
+            part = &modified_upstream_list.part;
+            v = part->elts;
+            for (i = 0; /* void */; i++) {
+                if (i >= part->nelts) {
+                    if (part->next == NULL) {
+                        break;
+                    }
+                    
+                    part = part->next;
+                    v = part->elts;
+                    i = 0;
+                }
+                
+                if (v[i].len == name.len && ngx_strncmp(v[i].data, name.data, name.len) == 0) {
+                    found = 1;
+                    break;
+                }
+            }
         }
 #endif
-    
-        if (ngx_dynamic_file_upstreams_init_peers(peers, &dfup[i], log) != NGX_OK) {
+
+        if (ngx_dynamic_file_upstreams_init_peers(peers, &dfup[i], found, log) != NGX_OK) {
             ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to initialize peers for upstream \"%V\"", &name);
             return NGX_ERROR;
         }
+
+#if (NGX_HTTP_UPSTREAM_ZONE)
+        if (uscf->shm_zone && !found) {
+            up_name = ngx_list_push(&modified_upstream_list);
+            up_name->len = name.len;
+            up_name->data = ngx_pstrdup(ngx_cycle->pool, &name);
+        }
+#endif
 
         rcf = ngx_http_conf_upstream_srv_conf(uscf, ngx_http_upstream_random_module);
         if (rcf != NULL) {
