@@ -55,7 +55,12 @@ extern ngx_module_t ngx_http_upstream_random_module;
 static ngx_event_t ngx_dynamic_file_upstreams_timer;
 /* modification time of the dynamic upstream file */
 static time_t ngx_dynamic_file_upstreams_file_mtime;
-/* a list of modified upstream names */
+
+/* a list of names of once modified upstreams.
+  In function ngx_http_upstream_zone_copy_peer, peers are allocated one by one.
+  But in our case, peers are allocated in one slab memory allocation (see ngx_dynamic_file_upstreams_init_peers).
+  As a result, we must be able to tell whether to free one by one or just once. It's achieved by keeping a record
+  of those upstreams which were modified */
 static ngx_list_t modified_upstream_list;
 
 /* upstreams_file /path/to/file interval=time */
@@ -873,9 +878,6 @@ FINISH:
             }
 
             opeer = old_peer->next;
-            ngx_log_error(NGX_LOG_DEBUG, log, 0,
-                "Freeing old peer %V", &old_peer->name);
-
             if (!was_modified) {
                 ngx_slab_free(peers->shpool, old_peer);
             }
@@ -901,8 +903,6 @@ FINISH:
             }
 
             opeer = old_backup_peer->next;
-            ngx_log_error(NGX_LOG_DEBUG, log, 0,
-                "Freeing old backup peer %V", &old_backup_peer->name);
             if (!was_modified) {
                 ngx_slab_free(peers->shpool, old_backup_peer);
             }
@@ -926,8 +926,9 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
     ngx_dynamic_file_upstream_t *dfup;
     ngx_http_upstream_rr_peers_t *peers;
     ngx_http_upstream_random_srv_conf_t *rcf;
-    ngx_str_t name, *up_name;
-    ngx_uint_t i;
+    ngx_str_t name, *v, *up_name;
+    ngx_uint_t i, found = 0;
+    ngx_list_part_t *part;
 
     umcf = ngx_http_cycle_get_module_main_conf(ngx_cycle, ngx_http_upstream_module);
     if (umcf == NULL) {
@@ -950,6 +951,7 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
         }
         peers = uscf->peer.data;
 
+        found = 0;
 #if (NGX_HTTP_UPSTREAM_ZONE)
         if (uscf->shm_zone) {
             /* for upstreams with zone info(shared memory), only the first worker process does the update */
@@ -957,40 +959,41 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
                 return NGX_OK;
             }
         }
-#endif
-    
+
         /* check whether this upstream was once modified */
-        ngx_int_t found = 0;
-        ngx_list_part_t *part = &modified_upstream_list.part;
-        ngx_str_t *v = part->elts;
+        part = &modified_upstream_list.part;
+        v = part->elts;
         for (i = 0; /* void */; i++) {
             if (i >= part->nelts) {
                 if (part->next == NULL) {
                     break;
                 }
-
+        
                 part = part->next;
                 v = part->elts;
                 i = 0;
             }
-
+        
             if (v[i].len == name.len && ngx_strncmp(v[i].data, name.data, name.len) == 0) {
                 found = 1;
                 break;
             }
         }
+#endif
 
         if (ngx_dynamic_file_upstreams_init_peers(peers, &dfup[i], found, log) != NGX_OK) {
             ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to initialize peers for upstream \"%V\"", &name);
             return NGX_ERROR;
         }
 
-        if (!found) {
+#if (NGX_HTTP_UPSTREAM_ZONE)
+        if (uscf->shm_zone && !found) {
             /* add upstream to modified upstream list */   
             up_name = ngx_list_push(&modified_upstream_list);
             up_name->len = name.len;
             up_name->data = ngx_pstrdup(ngx_cycle->pool, &name);
         }
+#endif
 
         rcf = ngx_http_conf_upstream_srv_conf(uscf, ngx_http_upstream_random_module);
         if (rcf != NULL) {

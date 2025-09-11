@@ -23,8 +23,6 @@ $t->write_file_expand( 'nginx.conf', <<'EOF' );
 
 daemon off;
 
-load_module /home/ken/documents/nginx_test/ngx_dynamic_file_upstreams_module.so;
-
 events {
 }
 
@@ -63,12 +61,12 @@ $t->write_file( "test_upstream", <<'EOF' );
 
     upstream backend_servers {
         server 127.0.0.1:8082;
+        server 1.2.3.4:9991 down;
         server 1.2.3.4:9990 backup;
     }
 
 EOF
 
-        # server 1.2.3.4:9991 down;
 
 $t->try_run('test ipv4')->plan(3);
 
