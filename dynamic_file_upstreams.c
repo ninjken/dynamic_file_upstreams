@@ -55,7 +55,8 @@ extern ngx_module_t ngx_http_upstream_random_module;
 static ngx_event_t ngx_dynamic_file_upstreams_timer;
 /* modification time of the dynamic upstream file */
 static time_t ngx_dynamic_file_upstreams_file_mtime;
-
+/* a list of modified upstream names */
+static ngx_list_t modified_upstream_list;
 
 /* upstreams_file /path/to/file interval=time */
 static ngx_command_t ngx_dynamic_file_upstreams_commands[] = {
@@ -131,6 +132,8 @@ ngx_dynamic_file_upstreams_init_process(ngx_cycle_t *cycle)
     }
 
     ngx_dynamic_file_upstreams_file_mtime = 0;
+    ngx_list_init(&modified_upstream_list, ngx_cycle->pool, 4, sizeof(ngx_str_t));
+
     ngx_memzero(&ngx_dynamic_file_upstreams_timer, sizeof(ngx_event_t));
     ngx_dynamic_file_upstreams_timer.handler = ngx_dynamic_file_upstreams_handler;
     ngx_dynamic_file_upstreams_timer.data = mcf;
@@ -601,7 +604,7 @@ ngx_dynamic_file_upstreams_free_helper(ngx_http_upstream_rr_peers_t *peers, void
 /* heavy reference from ngx_http_upstream_init_round_robin */
 static ngx_int_t ngx_dynamic_file_upstreams_init_peers(
     ngx_http_upstream_rr_peers_t *peers, ngx_dynamic_file_upstream_t *upstream,
-    ngx_log_t *log)
+    ngx_int_t was_modified, ngx_log_t *log)
 {
     ngx_http_upstream_rr_peers_t *backup;
     ngx_http_upstream_rr_peer_t *peer, *old_peer, *old_backup_peer, **peerp, *opeer;
@@ -855,6 +858,7 @@ FINISH:
     /* release only shared memory from old peers */
 #if (NGX_HTTP_UPSTREAM_ZONE)
     if (peers->shpool) {
+        peer = old_peer;
         while (old_peer) {
             if (old_peer->server.data) {
                 ngx_slab_free(peers->shpool, old_peer->server.data);
@@ -872,10 +876,17 @@ FINISH:
             ngx_log_error(NGX_LOG_DEBUG, log, 0,
                 "Freeing old peer %V", &old_peer->name);
 
-            ngx_slab_free(peers->shpool, old_peer);
+            if (!was_modified) {
+                ngx_slab_free(peers->shpool, old_peer);
+            }
             old_peer = opeer;
         }
 
+        if (was_modified) {
+            ngx_slab_free(peers->shpool, peer);
+        }
+
+        peer = old_backup_peer;
         while (old_backup_peer) {
             if (old_backup_peer->server.data) {
                 ngx_slab_free(peers->shpool, old_backup_peer->server.data);
@@ -892,8 +903,14 @@ FINISH:
             opeer = old_backup_peer->next;
             ngx_log_error(NGX_LOG_DEBUG, log, 0,
                 "Freeing old backup peer %V", &old_backup_peer->name);
-            ngx_slab_free(peers->shpool, old_backup_peer);
+            if (!was_modified) {
+                ngx_slab_free(peers->shpool, old_backup_peer);
+            }
             old_backup_peer = opeer;
+        }
+
+        if (was_modified) {
+            ngx_slab_free(peers->shpool, peer);
         }
     }
 #endif
@@ -909,7 +926,7 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
     ngx_dynamic_file_upstream_t *dfup;
     ngx_http_upstream_rr_peers_t *peers;
     ngx_http_upstream_random_srv_conf_t *rcf;
-    ngx_str_t name;
+    ngx_str_t name, *up_name;
     ngx_uint_t i;
 
     umcf = ngx_http_cycle_get_module_main_conf(ngx_cycle, ngx_http_upstream_module);
@@ -942,9 +959,37 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
         }
 #endif
     
-        if (ngx_dynamic_file_upstreams_init_peers(peers, &dfup[i], log) != NGX_OK) {
+        /* check whether this upstream was once modified */
+        ngx_int_t found = 0;
+        ngx_list_part_t *part = &modified_upstream_list.part;
+        ngx_str_t *v = part->elts;
+        for (i = 0; /* void */; i++) {
+            if (i >= part->nelts) {
+                if (part->next == NULL) {
+                    break;
+                }
+
+                part = part->next;
+                v = part->elts;
+                i = 0;
+            }
+
+            if (v[i].len == name.len && ngx_strncmp(v[i].data, name.data, name.len) == 0) {
+                found = 1;
+                break;
+            }
+        }
+
+        if (ngx_dynamic_file_upstreams_init_peers(peers, &dfup[i], found, log) != NGX_OK) {
             ngx_log_error(NGX_LOG_ERR, log, 0, "Failed to initialize peers for upstream \"%V\"", &name);
             return NGX_ERROR;
+        }
+
+        if (!found) {
+            /* add upstream to modified upstream list */   
+            up_name = ngx_list_push(&modified_upstream_list);
+            up_name->len = name.len;
+            up_name->data = ngx_pstrdup(ngx_cycle->pool, &name);
         }
 
         rcf = ngx_http_conf_upstream_srv_conf(uscf, ngx_http_upstream_random_module);
