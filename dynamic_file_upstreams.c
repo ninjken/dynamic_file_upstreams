@@ -927,9 +927,12 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
     ngx_dynamic_file_upstream_t *dfup;
     ngx_http_upstream_rr_peers_t *peers;
     ngx_http_upstream_random_srv_conf_t *rcf;
-    ngx_str_t name, *v, *up_name;
+    ngx_str_t name;
     ngx_uint_t i, found;
+#if (NGX_HTTP_UPSTREAM_ZONE)
+    ngx_str_t *up_name, *v;
     ngx_list_part_t *part;
+#endif
 
     umcf = ngx_http_cycle_get_module_main_conf(ngx_cycle, ngx_http_upstream_module);
     if (umcf == NULL) {
