@@ -206,6 +206,7 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
     ngx_file_t file;
     time_t mtime;
     ngx_dynamic_file_upstreams_t ups;
+    ngx_pool_t *temp_pool;
 
     file.name = mcf->upstreams_file;
     if (ngx_file_info(file.name.data, &file.info) == NGX_FILE_ERROR) {
@@ -216,11 +217,11 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
     mtime = ngx_file_mtime(&file.info);
     if (mtime == ngx_dynamic_file_upstreams_file_mtime) {
         ngx_log_error(NGX_LOG_DEBUG, ev->log, 0, "Dynamic upstreams file mtime unchanged, skip processing");
-        return;
+        goto NEXT_ROUND;
     }
 
     file.log = ev->log;
-    ngx_pool_t *temp_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, ev->log);
+    temp_pool = ngx_create_pool(NGX_DEFAULT_POOL_SIZE, ev->log);
     if (temp_pool == NULL) {
         ngx_log_error(NGX_LOG_ERR, ev->log, 0, "failed to create temp pool");
         return;
@@ -238,6 +239,8 @@ ngx_dynamic_file_upstreams_handler(ngx_event_t *ev)
     }
     
     ngx_destroy_pool(temp_pool);
+
+NEXT_ROUND:
     if (!ngx_exiting) {
         ngx_add_timer(ev, mcf->interval);
     } else {
