@@ -967,11 +967,7 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
     ngx_http_upstream_rr_peers_t *peers;
     ngx_http_upstream_random_srv_conf_t *rcf;
     ngx_str_t name;
-    ngx_uint_t i, found;
-#if (NGX_HTTP_UPSTREAM_ZONE)
-    ngx_str_t *up_name, *v;
-    ngx_list_part_t *part;
-#endif
+    ngx_uint_t i;
 
     umcf = ngx_http_cycle_get_module_main_conf(ngx_cycle, ngx_http_upstream_module);
     if (umcf == NULL) {
@@ -994,7 +990,6 @@ ngx_dynamic_file_upstreams_update_rr_peers(const ngx_dynamic_file_upstreams_t *u
         }
         peers = uscf->peer.data;
 
-        found = 0;
 #if (NGX_HTTP_UPSTREAM_ZONE)
         if (uscf->shm_zone) {
             /* for upstreams with zone info(shared memory), only the first worker process does the update */
